@@ -1,5 +1,49 @@
 import numpy as np
-from numba import njit, prange
+import cupy as cp
+from numba import njit
+
+def boundary_array(input:tuple, gridsize:tuple) -> cp.ndarray:
+    boundary = [[],[]]
+    for i in input:
+        m1, n1, m2, n2 = i[0]
+        dm = (m2 - m1)/gridsize[0]
+        dn = (n2 - n1)/gridsize[1] 
+        x = m1
+        y = n1
+        while y != n2:
+            boundary[0].append(y*gridsize[0]+x)
+            boundary[1].append(i[1])
+            x = int(x+dm)
+            y = int(y+dn)
+            #print(x,y)
+    
+    return cp.asarray(boundary, dtype=cp.int32)
+
+
+def boundary_conditions_left_gpu(A:cp.ndarray, boundary:cp.ndarray):
+    for i in boundary[0]:
+        A[i,:] = 0
+        A[i, i] = 1
+
+
+
+def Laplacian(m, n) -> cp.ndarray:
+
+    Lap = cp.zeros((m*n, m*n), dtype=cp.float32)
+    for i in range(n):
+        for j in range(m):
+            idx = i*m+j
+            Lap[idx, idx] = -4
+            if j>0:
+                Lap[idx, idx-1] = 1
+            if j<m-1:
+                Lap[idx, idx+1] = 1
+            if i>0:
+                Lap[idx, idx-m] = 1
+            if i<n-1:
+                Lap[idx, idx+m] = 1
+    return Lap
+
 
 @njit(parallel=False, fastmath=True)
 def lu_solve(lower_triangular, upper_triangular, x, b):
