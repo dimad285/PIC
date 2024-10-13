@@ -1,33 +1,15 @@
 import numpy as np
 import cupy as cp
-import cupyx as cpx
 import scipy
 import time
-import sdl2
-import sdl2.ext
 import Render
 import Update
 import Solvers
-import sys
+import Consts
+import tkinter as tk
 
 
-def input():
-    def parse_input(filename):
-        with open(filename, 'r') as file:
-            lines = file.readlines()
-            variables = {}
-            for line in lines:
-                key, value = line.split('=')
-                variables[key.strip()] = eval(value.strip())
-        return variables
-
-    if len(sys.argv) > 1:
-        variables = parse_input(sys.argv[1])
-        for key, value in variables.items():
-            globals()[key] = value
-    else:
-        print("Please specify an input file")
-
+# MOVE RUN FUNCTION TO THE MAIN FILE
 
 def run_cpu(m, n, X, Y, N, dt, q, RENDER = True, DIAGNOSTICS = False, RENDER_FRAME = 1, SCREEN_SIZE = (512, 512), DIAGNOSTICS_SIZE = (512, 512), PARTICLE_COLOR = 0x00ff00):
     RUN = True
@@ -64,7 +46,9 @@ def run_cpu(m, n, X, Y, N, dt, q, RENDER = True, DIAGNOSTICS = False, RENDER_FRA
         
         if DIAGNOSTICS:
             window_diagnostics = sdl2.ext.Window("Diagnostics", size=DIAGNOSTICS_SIZE)
-            pixar2 = sdl2.ext.pixelaccess.pixels2d(window_diagnostics.get_surface())
+            diag_surface = window_diagnostics.get_surface()
+            pixar2 = sdl2.ext.pixelaccess.pixels2d(diag_surface)
+            
             window_diagnostics.show()
     
     while RUN:
@@ -94,7 +78,7 @@ def run_cpu(m, n, X, Y, N, dt, q, RENDER = True, DIAGNOSTICS = False, RENDER_FRA
             Render.draw_particles(R, pixar1, SCREEN_SIZE, PARTICLE_COLOR)
             window.refresh()
             if DIAGNOSTICS:
-                Render.colour_map(phi, pixar2, DIAGNOSTICS_SIZE, gridsize)
+                Render.heat_map(phi, pixar2, DIAGNOSTICS_SIZE, gridsize)
                 window_diagnostics.refresh()
             
             print(f"Frame time: {(time.time() - start_time)*1000/framecounter:.2f}ms")
@@ -104,89 +88,104 @@ def run_cpu(m, n, X, Y, N, dt, q, RENDER = True, DIAGNOSTICS = False, RENDER_FRA
 
     return 0
 
-
-
-def run_gpu(m, n, X, Y, N, dt, q, boundary, RENDER = True, DIAGNOSTICS = False, RENDER_FRAME = 1, SCREEN_SIZE = (512, 512), DIAGNOSTICS_SIZE = (512, 512), PARTICLE_COLOR = 0x00ff00):
+def run_gpu(m, n, X, Y, N, dt,
+            boundary = None, RENDER = True, DIAGNOSTICS = False, UI = True, RENDER_FRAME = 1, 
+            SCREEN_SIZE = (512, 512), DIAGNOSTICS_SIZE = (1024, 1024), 
+            solver = 'inverse', DIAG_TYPE = 'line', bins = 64):
+    
     print('Starting...')
-    print('creating arrays...')
     RUN = True
-    #GRID
-    #gridsize = cp.asarray((m, n), dtype=cp.int32)
-    gridsize = (m, n)
-    #x = cp.linspace(0, X, m, dtype=cp.float32)  
-    #y = cp.linspace(0, Y, n, dtype=cp.float32)
-    rho = cp.zeros((m*n), dtype=cp.float32)
-    phi = cp.zeros((m*n), dtype=cp.float32)
-    Ex = cp.zeros((m*n), dtype=cp.float32)
-    Ey = cp.zeros((m*n), dtype=cp.float32)
-    #PARTICLES
-    R = cp.random.rand(2, N)
-    V = cp.zeros((3, N), dtype=cp.float32)
-    #MCC
-    #NGD = cp.ones((m*n), dtype=cp.float32)
-    #sigma = cp.zeros(N, dtype=cp.float32)
-    #P = cp.zeros_like(R[0], dtype=cp.float32)
-    
-    print('creating boundary array...')
-    bound = Solvers.boundary_array(boundary, gridsize)
-    
-    print('creating Laplacian...')
     framecounter = 0
-    Lap = -Solvers.Laplacian(m, n)
-    Solvers.boundary_conditions_left_gpu(Lap, bound)
-    #L, U = scipy.linalg.lu(Lap, permute_l=True)
-    print('creating inverse Laplacian...')
-    Lap = cp.linalg.inv(Lap)
-    #del Lap
+    print('creating arrays...')
+    gridsize = (m, n)
+    rho = cp.empty((m*n), dtype=cp.float64)
+    phi = cp.empty((m*n), dtype=cp.float64)
+    E = cp.empty((2, m*n), dtype=cp.float64)
+    R = cp.random.uniform(0.25, 0.75, (2, N)).astype(cp.float64)
+    V = cp.zeros((2, N), dtype=cp.float64)
+    #M_1 = cp.ones(N, dtype=cp.float32) / Consts.me
+    part_type = cp.random.randint(0, 2, N, dtype=cp.int32) + 1
+    m_type = cp.array([Consts.mp, Consts.me], dtype=cp.float64)
+    m_type_1 = cp.array([1/Consts.mp, 1/Consts.me], dtype=cp.float64)
+    q_type = cp.array([1.0 * Consts.qe, -1.0 * Consts.qe], dtype=cp.float64)
 
+    
+    if boundary != None:
+        print('creating boundary array...')
+        bound = Solvers.boundary_array(boundary, gridsize)
+        #print(bound)
+
+    if solver == 'inverse':
+        print('creating Laplacian...')
+        Lap = Solvers.Laplacian_square(m, n)
+        if boundary != None:
+            print('applying boundary conditions...')
+            Solvers.boundary_conditions_left_gpu(Lap, bound)
+        print('creating inverse Laplacian...')
+        Lap = cp.linalg.inv(Lap)
+    elif solver == 'fft':
+        k_sq = Solvers.setup_fft_solver(m, n)
+        pass
+
+
+    if UI:
+        ui = tk.Tk()
+        ui.mainloop()
     
     if RENDER:
-        sdl2.ext.init()
-        window = sdl2.ext.Window("PIC", size=SCREEN_SIZE,)
-        window.show()
-        pixar1 = sdl2.ext.pixelaccess.pixels2d(window.get_surface())
+        print('creating renderer...')
+        renderer =Render.PICRenderer(*SCREEN_SIZE)
         
-        if DIAGNOSTICS:
-            window_diagnostics = sdl2.ext.Window("Diagnostics", size=DIAGNOSTICS_SIZE)
-            pixar2 = sdl2.ext.pixelaccess.pixels2d(window_diagnostics.get_surface())
-            window_diagnostics.show()
+    # INIT
+    
+    Update.update_density_gpu(R, part_type, rho, X, Y, gridsize, q_type)
+    if boundary != None:
+        rho[bound[0]] = bound[1]
+    if solver == 'inverse':
+            phi = cp.dot(Lap, -rho*Consts.eps0_1)
+    elif solver == 'fft':
+        phi = Solvers.solve_poisson_fft(rho, k_sq, Consts.eps0)
+    Update.updateE_gpu(E, phi, X, Y, gridsize)
+    Update.update_V(R, V, E, part_type, q_type, m_type_1, gridsize, -dt*0.5, X, Y)
     
     print('running...')
     while RUN:
 
-        if RENDER:
-            framecounter += 1
-            events = sdl2.ext.get_events()
-            for event in events:
-                if event.type == sdl2.SDL_WINDOWEVENT_CLOSE:
-                    RUN = False
-                    break
-
         start_time = time.time()
 
         # UPDATE
-        Update.push_gpu(R, V, Ex, Ey, gridsize, dt)
-        Update.update_density_gpu(R, rho, gridsize, q)
-        rho[bound[0]] = bound[1]
-        phi[:] = cp.dot(Lap, -rho)
-        Update.updateE_gpu(Ex, Ey, phi, gridsize)
-        #Update.update_sigma(sigma, V)
-        #Update.MCC(NGD, sigma, V, R, gridsize, dt)
 
-        # RENDER
+        R[:] += V[:] * dt
+        Update.update_density_gpu(R, part_type, rho, X, Y, gridsize, q_type)
+        if boundary != None:
+            rho[bound[0]] = bound[1]
+        if solver == 'inverse':
+            phi = cp.dot(Lap, -rho*Consts.eps0_1)
+        elif solver == 'fft':
+            phi = Solvers.solve_poisson_fft(rho, k_sq, Consts.eps0)
+        Update.updateE_gpu(E, phi, X, Y, gridsize)
+        Update.update_V(R, V, E, part_type, q_type, m_type_1, gridsize, dt, X, Y)
         
+        #dt = min(1/cp.max(cp.abs(V[0]))/X/(m-1), 1/cp.max(cp.abs(V[1]))/Y/(n-1)) * 0.5
+        #print(dt)
+        # RENDER
+
         if framecounter == RENDER_FRAME and RENDER:
-            pixar1[:, :] = 0
-            Render.draw_particles_gpu(R, pixar1, SCREEN_SIZE, PARTICLE_COLOR)
-            Render.draw_boundary(bound, gridsize, pixar1, SCREEN_SIZE, 0xff0000)
-            window.refresh()
-            if DIAGNOSTICS:
-                pixar2[:, :] = 0
-                Render.heat_map_2d_gpu(phi, pixar2, DIAGNOSTICS_SIZE, gridsize)
-                window_diagnostics.refresh()
+
+            renderer.update_particles(R, part_type)
+            renderer.render()
+            renderer.change_title(f"Frame time: {(time.time() - start_time)*1000:.2f} ms     dt = {dt:.2e} s")
+            if renderer.should_close():
+                break
+
+            # RENDER DIAGNOSTICS
+       
+            #print(f"Frame time: {(time.time() - start_time)*1000:.2f}ms")
             
-            print(f"Frame time: {(time.time() - start_time)*1000:.2f}ms")
             framecounter = 0
         elif RENDER == False:
             print(f"Frame time: {(time.time() - start_time)*1000:.2f}ms")
+
+    renderer.close()
+
     return 0

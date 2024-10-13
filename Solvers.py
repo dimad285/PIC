@@ -1,21 +1,35 @@
-import numpy as np
 import cupy as cp
-from numba import njit
 
 def boundary_array(input:tuple, gridsize:tuple) -> cp.ndarray:
     boundary = [[],[]]
     for i in input:
         m1, n1, m2, n2 = i[0]
-        dm = (m2 - m1)/gridsize[0]
-        dn = (n2 - n1)/gridsize[1] 
+        dm = (m2 - m1)
+        if dm > 0:
+            dm = 1
+        elif dm < 0:
+            dm = -1
+        else:
+            dm = 0
+        dn = (n2 - n1)
+        if dn > 0:
+            dn = 1
+        elif dn < 0:
+            dn = -1
+        else:
+            dn = 0
         x = m1
         y = n1
-        while y != n2:
+        while True:
             boundary[0].append(y*gridsize[0]+x)
             boundary[1].append(i[1])
             x = int(x+dm)
             y = int(y+dn)
-            #print(x,y)
+            #print(x, y)
+            if x == m2 and y == n2:
+                boundary[0].append(y*gridsize[0]+x)
+                boundary[1].append(i[1])
+                break
     
     return cp.asarray(boundary, dtype=cp.int32)
 
@@ -27,7 +41,7 @@ def boundary_conditions_left_gpu(A:cp.ndarray, boundary:cp.ndarray):
 
 
 
-def Laplacian(m, n) -> cp.ndarray:
+def Laplacian_square(m, n) -> cp.ndarray:
 
     Lap = cp.zeros((m*n, m*n), dtype=cp.float32)
     for i in range(n):
@@ -42,37 +56,56 @@ def Laplacian(m, n) -> cp.ndarray:
                 Lap[idx, idx-m] = 1
             if i<n-1:
                 Lap[idx, idx+m] = 1
-    return Lap
+    return Lap.astype(cp.float32)
 
 
-@njit(parallel=False, fastmath=True)
-def lu_solve(lower_triangular, upper_triangular, x, b):
-    """Solve the linear system Ax = b using LU decomposition."""
-    n = len(b)
-    y = np.empty_like(b)
-    x[:] = b
-    
-    # Forward substitution
+def Laplacian_cilindrical(m, n) -> cp.ndarray:
+
+    Lap = cp.zeros((m*n, m*n), dtype=cp.float32)
     for i in range(n):
-        y[i] = b[i] - np.dot(lower_triangular[i, :i], y[:i])
+        for j in range(m):
+            idx = i*m+j
+            Lap[idx, idx] = -4
+            if j>0:
+                Lap[idx, idx-1] = 1
+            if j<m-1:
+                Lap[idx, idx+1] = 1
+            if i>0:
+                Lap[idx, idx-m] = 1
+            if i<n-1:
+                Lap[idx, idx+m] = 1
+    return Lap.astype(cp.float32)
 
-    # Backward substitution
-    for i in range(n - 1, -1, -1):
-        x[i] = (y[i] - np.dot(upper_triangular[i, i + 1:], x[i + 1:])) / upper_triangular[i, i]
+
+def setup_fft_solver(m, n):
+    # Create wavenumber arrays
+    kx = 2 * cp.pi * cp.fft.fftfreq(m)
+    ky = 2 * cp.pi * cp.fft.fftfreq(n)
+    
+    # Create 2D wavenumber grid
+    kx_grid, ky_grid = cp.meshgrid(kx, ky)
+    
+    # Compute k^2, avoiding division by zero at k=0
+    k_sq = kx_grid**2 + ky_grid**2
+    k_sq[0, 0] = 1.0  # Avoid division by zero
+    
+    return k_sq
 
 
-@njit(parallel=False, fastmath=True)
-def CG_solve(A: np.ndarray, x: np.ndarray, b: np.ndarray, residual=1e-6):
-    r = b - np.dot(A, x)
-    p = r.copy()
-    r0 = np.dot(r, r)
-    while r0 > residual:
-        Ap = np.dot(A, p)
-        pAp = np.dot(p, Ap)
-        alpha = r0 / pAp
-        x += alpha * p
-        r -= alpha * Ap
-        r1 = np.dot(r, r)
-        p = r + (r1 / pAp) * p
-        r0 = r1
-
+def solve_poisson_fft(rho, k_sq, epsilon0):
+    # Reshape rho to 2D
+    rho_2d = rho.reshape(k_sq.shape)
+    
+    # Compute FFT of charge density
+    rho_k = cp.fft.fftn(rho_2d)
+    
+    # Solve Poisson equation in Fourier space
+    phi_k = rho_k / (k_sq * epsilon0)
+    
+    # Handle k=0 mode (set to average of phi)
+    phi_k[0, 0] = 0
+    
+    # Inverse FFT to get potential
+    phi = cp.fft.ifftn(phi_k).real / (k_sq.shape[0] * k_sq.shape[1])
+    
+    return phi.ravel()  # Return as 1D array

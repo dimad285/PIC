@@ -1,0 +1,33 @@
+{
+	"nodes":[
+		{"id":"fc1b623ed151e831","type":"text","text":"# Simulation","x":-345,"y":-220,"width":250,"height":60},
+		{"id":"ed4578d18a4dd4d8","type":"file","file":"Poisson solver.md","x":220,"y":69,"width":420,"height":217},
+		{"id":"9f7520d74b13bab6","type":"file","file":"Particle integration.md","x":-24,"y":340,"width":400,"height":148},
+		{"id":"da6cd77a7962080e","type":"file","file":"Field Solver.md","x":-424,"y":40,"width":400,"height":246},
+		{"id":"bf487cb35f9e4ce7","type":"text","text":"# [[Renderer]]","x":20,"y":-220,"width":250,"height":60},
+		{"id":"7dd0491097ec71ef","type":"file","file":"To do.md","x":-220,"y":-600,"width":400,"height":181},
+		{"id":"c3bd2744cee7bc93","type":"text","text":"# Important\n\nCheck operation order i.e. if integration of fields velocities and coordinates are in correct order\n\nCheck if all formulas are correct ","x":336,"y":-607,"width":668,"height":195},
+		{"id":"658c6577281c8a25","type":"file","file":"Boundary interaction.md","x":-889,"y":100,"width":400,"height":77},
+		{"id":"df1d3d62872d260d","type":"file","file":"Collisions.md","x":-1360,"y":86,"width":400,"height":106},
+		{"id":"ced573376c5c42e6","type":"text","text":"# Barnes–Hut simulation","x":-1600,"y":368,"width":400,"height":72},
+		{"id":"1025a5083030be59","type":"text","text":"# Monte Carlo","x":-1139,"y":368,"width":250,"height":72},
+		{"id":"320b809c47fab2b9","type":"text","text":"# Quadtree","x":-1525,"y":600,"width":250,"height":60}
+	],
+	"edges":[
+		{"id":"24b70745d9447337","fromNode":"df1d3d62872d260d","fromSide":"bottom","toNode":"ced573376c5c42e6","toSide":"top"},
+		{"id":"ef27534db3df9e2c","fromNode":"7dd0491097ec71ef","fromSide":"bottom","toNode":"bf487cb35f9e4ce7","toSide":"top"},
+		{"id":"b88b86c3990670cc","fromNode":"7dd0491097ec71ef","fromSide":"bottom","toNode":"fc1b623ed151e831","toSide":"top"},
+		{"id":"1acc49c9e498350a","fromNode":"fc1b623ed151e831","fromSide":"bottom","toNode":"ed4578d18a4dd4d8","toSide":"top"},
+		{"id":"5c07ac6c80483acf","fromNode":"fc1b623ed151e831","fromSide":"bottom","toNode":"df1d3d62872d260d","toSide":"top"},
+		{"id":"8e92f3be72f693e1","fromNode":"fc1b623ed151e831","fromSide":"bottom","toNode":"9f7520d74b13bab6","toSide":"top"},
+		{"id":"9ccfdc1761c4c524","fromNode":"da6cd77a7962080e","fromSide":"bottom","toNode":"9f7520d74b13bab6","toSide":"left"},
+		{"id":"f77a06e83e26770d","fromNode":"9f7520d74b13bab6","fromSide":"left","toNode":"da6cd77a7962080e","toSide":"bottom"},
+		{"id":"857ed65364f012dc","fromNode":"ed4578d18a4dd4d8","fromSide":"bottom","toNode":"da6cd77a7962080e","toSide":"right"},
+		{"id":"1873a56e992ebfc9","fromNode":"7dd0491097ec71ef","fromSide":"right","toNode":"c3bd2744cee7bc93","toSide":"left"},
+		{"id":"7e781f0868c63154","fromNode":"fc1b623ed151e831","fromSide":"bottom","toNode":"658c6577281c8a25","toSide":"top"},
+		{"id":"6324176947f14b78","fromNode":"9f7520d74b13bab6","fromSide":"bottom","toNode":"658c6577281c8a25","toSide":"bottom"},
+		{"id":"d191ae335b97286e","fromNode":"658c6577281c8a25","fromSide":"bottom","toNode":"9f7520d74b13bab6","toSide":"bottom"},
+		{"id":"0beae52c4471ae5d","fromNode":"ced573376c5c42e6","fromSide":"bottom","toNode":"320b809c47fab2b9","toSide":"top"},
+		{"id":"e09633dad38dc4d8","fromNode":"df1d3d62872d260d","fromSide":"bottom","toNode":"1025a5083030be59","toSide":"top"}
+	]
+}

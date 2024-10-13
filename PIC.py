@@ -1,29 +1,34 @@
 import sys
 import Run
+from Parser import parse_config
 
+config = parse_config('input.ini')
 
-CPU = False
-GPU = True
-# Constants
-m = 128#x axis nodes
-n = 128  #y axis nodes
-N = 0  #particles
-dt = 0.00005
-q = 1
-X = 1
-Y = 1
-
-boundary1 = ([int(m/4*3), int(n/4*3), int(m/4*3), int(n/4)], 100)
-boundary2 = ([int(m/4), int(n/4*3), int(m/4), int(n/4)], -100)
-
-boundarys = (boundary1, boundary2)
-
-
+# Use parsed parameters
+CPU = config['CPU']
+GPU = config['GPU']
+m = config['m']
+n = config['n']
+N = config['N']
+dt = config['dt']
+q = config['q']
+X = config['X']
+Y = config['Y']
+boundarys = config['boundarys']
 
 if __name__ == "__main__":
     if CPU:
-        sys.exit(Run.run_cpu(m,n,X,Y,N,dt,q, RENDER=True))
+        sys.exit(Run.run_cpu(m, n, X, Y, N, dt, RENDER=True))
     elif GPU:
-        sys.exit(Run.run_gpu(m,n,X,Y,N,dt,q, boundarys, RENDER=True, RENDER_FRAME=1, DIAGNOSTICS=True))
+        sys.exit(Run.run_gpu(m, n, X, Y, N, dt,
+                             boundary=None, 
+                             RENDER=config['RENDER'], 
+                             RENDER_FRAME=config['RENDER_FRAME'], 
+                             DIAGNOSTICS=config['DIAGNOSTICS'],
+                             solver=config['solver'], 
+                             DIAG_TYPE=config['DIAG_TYPE'], 
+                             bins=config['bins'],
+                             SCREEN_SIZE=config['SCREEN_SIZE'],
+                             UI=config['UI'],))
     else:
-        print("Please select CPU or GPU")
+        print("Please select CPU or GPU in the configuration file")
