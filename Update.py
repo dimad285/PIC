@@ -1,70 +1,5 @@
 import numpy as np
 import cupy as cp
-from numba import jit, njit, prange
-import random
-
-class CPU:
-
-    def __init__(self):
-        pass
-
-    @jit
-    def fmaxw(self):
-        return 2*(random.random() + random.random() + random.random() - 1.5)
-    
-    @njit(parallel=True,fastmath=True)
-    def push_cpu(R, V, Ex, Ey, gridsize:tuple, dt):
-        m, n = gridsize
-        for i in prange(len(R[0])):
-            j = int(R[0,i]*m)
-            k = int(R[1,i]*n)
-            idx = k*m + j
-            V[0,i] += Ex[idx]*dt
-            V[1,i] += Ey[idx]*dt
-
-        R[:,:] = R + V[0:2] * dt
-
-        for i in prange(len(R[0])):
-            if R[0, i] > 1 or R[1, i] > 1 or R[0, i] < 0 or R[1, i] < 0:
-                R[0, i] = 0.5
-                R[1, i] = 0.5
-                V[0, i] = 0
-                V[1, i] = 0
-
-    @njit(parallel=True, fastmath=True)
-    def update_density(R:np.ndarray, rho:np.ndarray, gridsize:tuple, q):
-        rho[:] = 0
-        for i in prange(len(R[0])):
-            j = int(R[0,i]*gridsize[0])
-            k = int(R[1,i]*gridsize[1])
-            rho[k*gridsize[0]+j] += q
-
-
-
-    #@njit
-    def updateE(Ex, Ey, phi, x, y, gridsize:tuple):
-        a = np.reshape(phi, gridsize)
-        dx = x/gridsize[0]
-        dy = y/gridsize[1]
-        Ex[:] = -np.gradient(a, dx)[1].flatten()
-        Ey[:] = -np.gradient(a, dy)[0].flatten()
-
-
-    @njit(parallel=True, fastmath=True)
-    def update_sigma(sigma:np.ndarray, V:np.ndarray):
-        V[2] = np.hypot(V[0], V[1])
-        sigma[:] = (-0.8821*np.log(V[2]) + 15.1262) * 10
-
-
-    @njit(parallel=True,fastmath=True)
-    def MCC(self, NGD, sigma, V, R, gridsize, dt):
-        for i in prange(len(R[0])):
-            idx = int(R[1,i]*gridsize[0]) + int(R[0,i]*gridsize[1])
-            x = -NGD[idx]*sigma[i]*V[2,i]*dt
-            if np.exp(x) > np.random.random():
-                V[0,i] = self.fmaxw()
-                V[1,i] = self.fmaxw()
-
 
 def update_R(R, V, dt:tuple):
     i = cp.arange(len(R[0]), dtype=cp.int32)
@@ -124,7 +59,7 @@ def update_density_gpu(R:cp.ndarray, part_type:cp.ndarray, rho:cp.ndarray, X:flo
     m, n = gridsize
     dx = X/(m-1)
     dy = Y/(n-1)
-    dV = dx*dy
+    dV_1 = 1/(dx*dy)
     rho.fill(0)
 
     I = (R[0]/X * (m-1))
@@ -142,7 +77,7 @@ def update_density_gpu(R:cp.ndarray, part_type:cp.ndarray, rho:cp.ndarray, X:flo
     k3 = k1 + n
     k4 = k3 + 1
 
-    charge_density = w * q[part_type] / dV
+    charge_density = w * q[part_type] * dV_1
     cp.add.at(rho, k1, charge_density * fx0 * fy0)
     cp.add.at(rho, k2, charge_density * fx1 * fy0)
     cp.add.at(rho, k3, charge_density * fx0 * fy1)

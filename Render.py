@@ -1,7 +1,5 @@
 import numpy as np
 import cupy as cp
-import sdl2
-import sdl2.ext
 import glfw
 from OpenGL.GL import *
 import OpenGL.GL.shaders as shaders
