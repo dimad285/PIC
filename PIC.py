@@ -14,24 +14,28 @@ def run_gpu(m, n, X, Y, N, dt,
             solver = 'inverse', DIAG_TYPE = 'line', bins = 64):
     
     print('Starting...')
+    fontfile = "C:\\Windows\\Fonts\\Arial.ttf"
     global RUN
     global FINISH
+    global TRACE
+    TRACE = False
     FINISH = False
     RUN = False
     framecounter = 0
+    t = 0
     print('creating arrays...')
     gridsize = (m, n)
     dx, dy = X / (m-1), Y / (n-1)
     rho = cp.empty((m*n), dtype=cp.float64)
     phi = cp.empty((m*n), dtype=cp.float64)
     E = cp.empty((2, m*n), dtype=cp.float64)
-    R = cp.random.uniform(0.25, 0.75, (2, N)).astype(cp.float64)
+    R = cp.random.uniform(X/4, X*3/4, (2, N)).astype(cp.float64)
     V = cp.zeros((2, N), dtype=cp.float64)
     #M_1 = cp.ones(N, dtype=cp.float32) / Consts.me
-    part_type = cp.random.randint(0, 2, N, dtype=cp.int32) + 1
+    part_type = cp.random.randint(1, 3, N, dtype=cp.int32)
     m_type = cp.array([Consts.mp, Consts.me], dtype=cp.float64)
-    m_type_1 = cp.array([1/Consts.mp, 1/Consts.me], dtype=cp.float64)
-    q_type = cp.array([1.0 * Consts.qe, -1.0 * Consts.qe], dtype=cp.float64)
+    m_type_1 = cp.array([0, 1/Consts.mp, 1/Consts.me], dtype=cp.float64)
+    q_type = cp.array([0, 1.0 * Consts.qe, -1.0 * Consts.qe], dtype=cp.float64)
 
     
     if boundary != None:
@@ -60,7 +64,6 @@ def run_gpu(m, n, X, Y, N, dt,
             RUN = not RUN
             button.config(text="Stop" if RUN else "Start")
 
-
         def close_window():
             global RUN
             global FINISH
@@ -68,10 +71,16 @@ def run_gpu(m, n, X, Y, N, dt,
             FINISH = True
             ui.destroy()
 
+        def toggle_trace():
+            global TRACE
+            TRACE = not TRACE
+
         ui = tk.Tk()
         ui.title("PIC Simulation Control")
         button = tk.Button(ui, text="Start", command=toggle_simulation)
+        button_trace = tk.Button(ui, text="Trace", command=toggle_trace)
         button.pack(pady=20)
+        button_trace.pack(pady=20)
         ui.protocol("WM_DELETE_WINDOW", close_window)
     
     else:
@@ -79,7 +88,7 @@ def run_gpu(m, n, X, Y, N, dt,
     
     if RENDER:
         print('creating renderer...')
-        renderer =Render.PICRenderer(*SCREEN_SIZE)
+        renderer = Render.PICRenderer(*SCREEN_SIZE, fontfile)
         
     # INIT
     
@@ -87,14 +96,14 @@ def run_gpu(m, n, X, Y, N, dt,
     if boundary != None:
         rho[bound[0]] = bound[1]
     if solver == 'inverse':
-            phi = cp.dot(Lap, -rho*Consts.eps0_1 * dx * dy)
+            phi = cp.dot(Lap, -rho * Consts.eps0_1 * dx * dy)
     elif solver == 'fft':
         phi = Solvers.solve_poisson_fft(rho, k_sq, Consts.eps0)
     Update.updateE_gpu(E, phi, X, Y, gridsize)
     Update.update_V(R, V, E, part_type, q_type, m_type_1, gridsize, -dt*0.5, X, Y)
 
     if RENDER:
-        renderer.update_particles(R, part_type)
+        renderer.update_particles(R/X, part_type)
         renderer.render()
 
     print('running...')
@@ -108,29 +117,49 @@ def run_gpu(m, n, X, Y, N, dt,
             start_time = time.time()
             # UPDATE
 
-            R[:] += V[:] * dt
+            R[:] += V[:] * dt 
             Update.update_density_gpu(R, part_type, rho, X, Y, gridsize, q_type)
             if boundary != None:
                 rho[bound[0]] = bound[1]
             if solver == 'inverse':
-                phi = cp.dot(Lap, -rho*Consts.eps0_1)
+                phi = cp.dot(Lap, -rho * Consts.eps0_1 * dx * dy)
             elif solver == 'fft':
                 phi = Solvers.solve_poisson_fft(rho, k_sq, Consts.eps0)
             elif solver == 'cg':
                 phi = Solvers.solve_poisson_pcg_gpu(rho, m, n, dx, dy, Consts.eps0)
             Update.updateE_gpu(E, phi, X, Y, gridsize)
             Update.update_V(R, V, E, part_type, q_type, m_type_1, gridsize, dt, X, Y)
-
+            t += dt
             sim_time = time.time() - start_time
 
             # RENDER
             framecounter += 1
             if framecounter == RENDER_FRAME and RENDER:
-                renderer.update_particles(R, part_type)
-                renderer.render()
+                renderer.update_particles(R/X, part_type)
+                #renderer.render_text("Hello, World!", x=10, y=10, scale=1.0, color=(1.0, 1.0, 1.0))  # Renders white text
+                renderer.render(clear= not TRACE)
                 render_time = time.time() - start_time - sim_time
-                renderer.change_title(f"Frame time: {(time.time() - start_time)*1000:.2f} ms     Simulation time: {sim_time*1000:.2f} ms     Render time: {render_time*1000:.2f} ms   dt: {dt:.2e}")
-                
+                KE = Update.total_kinetic_energy(V, m_type, part_type)
+                PE = Update.total_potential_energy(rho, phi, dx, dy)
+                TE = PE + KE
+                P = Update.total_momentum(V, m_type, part_type)
+                renderer.update_text('fps', {
+                    'text': f"Frame time: {(time.time() - start_time)*1000:.1f} ms",
+                    'x': 20,
+                    'y': 30,
+                    'scale': 0.5,
+                    'color': (0, 255, 0)
+                })
+                renderer.update_text('time', {
+                    'text': f"Time: {t:.2e} ms",
+                    'x': 20,
+                    'y': 60,
+                    'scale': 0.5,
+                    'color': (0, 255, 0)
+                })
+                #renderer.change_title(f"Frame time: {(time.time() - start_time)*1000:.2f} ms     Simulation time: {sim_time*1000:.2f} ms     Render time: {render_time*1000:.2f} ms   t: {t:.2e}")
+                #renderer.change_title(f"Kinetic energy: {KE:.2e} J  Potential energy: {PE:.2e} J    Total energy: {TE:.2e} J    Total momentum: {P:.2e} kg*m/s")
+               
                 if renderer.should_close():
                     break
 

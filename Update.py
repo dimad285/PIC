@@ -40,8 +40,8 @@ def update_V_kernel(R, V, E, part_type, q_type, m_type_1, gridsize, dt, X, Y):
           E[1, idx11] * wx * wy)
     
     # Update velocities
-    V[0] += Ex * dt * q_type[part_type] * m_type_1[part_type]
-    V[1] += Ey * dt * q_type[part_type] * m_type_1[part_type]
+    V[0] += Ex * q_type[part_type] * m_type_1[part_type] * dt 
+    V[1] += Ey * q_type[part_type] * m_type_1[part_type] * dt
 
 def update_V(R, V, E, part_type, q_type, m_type_1, gridsize, dt, X, Y):
     update_V_kernel(R, V, E, part_type, q_type, m_type_1, gridsize, dt, X, Y)
@@ -115,8 +115,8 @@ def updateE_fft(phi_k, kx, ky):
     return cp.array([Ex.ravel(), Ey.ravel()])
 
 
-def total_kinetic_energy(v:cp.ndarray, M:cp.ndarray):
-    return 0.5*cp.sum((v[0]**2 + v[1]**2) * M)
+def total_kinetic_energy(v:cp.ndarray, M_type:cp.ndarray, part_type:cp.ndarray):
+    return 0.5*cp.sum((v[0]**2 + v[1]**2) * M_type[part_type])
 
 def total_potential_energy(rho: cp.ndarray, phi: cp.ndarray, dx: float, dy: float) -> float:
     dV = dx * dy
@@ -124,8 +124,8 @@ def total_potential_energy(rho: cp.ndarray, phi: cp.ndarray, dx: float, dy: floa
     total_potential_energy = cp.sum(energy_density) * dV
     return total_potential_energy
 
-def total_momentum(v:cp.ndarray, M:cp.ndarray):
-    return cp.sum(cp.hypot(v[0], v[1])*M)
+def total_momentum(v:cp.ndarray, M:cp.ndarray, part_type:cp.ndarray):
+    return cp.sum(cp.hypot(v[0], v[1])*M[part_type])
 
 def KE_distribution(v:cp.ndarray, M:cp.ndarray, bins:int) -> list:
     E = (v[0]**2 + v[1]**2)*M*0.5
