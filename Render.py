@@ -68,6 +68,35 @@ void main()
 }
 """
 
+# Vertex shader for heatmap
+HEATMAP_VERTEX_SHADER = """
+#version 330
+in vec2 position;
+in float intensity;
+out float vIntensity;
+
+void main() {
+    gl_Position = vec4(position, 0.0, 1.0);
+    vIntensity = intensity;
+}
+"""
+
+# Fragment shader for heatmap
+HEATMAP_FRAGMENT_SHADER = """
+#version 330
+in float vIntensity;
+out vec4 fragColor;
+
+vec3 getHeatmapColor(float value) {
+    value = clamp(value, 0.0, 1.0);
+    return vec3(value, 0.0, 1.0 - value);  // Blue to red gradient
+}
+
+void main() {
+    fragColor = vec4(getHeatmapColor(vIntensity), 1.0);
+}
+"""
+
 class CharacterSlot:
     def __init__(self, texture, glyph):
         self.texture = texture
@@ -104,11 +133,13 @@ def ortho_matrix(left, right, bottom, top, near, far):
     return m
 
 class PICRenderer:
-    def __init__(self, width, height, fontfile):
+    def __init__(self, width, height, fontfile, renderer_type="particles"):
         self.width = width
         self.height = height
         self.fontfile = fontfile
+        self.renderer_type = renderer_type  # Choose either 'particles' or 'heatmap'
         self.text_content = {}
+        print(f'Initializing {renderer_type} PIC Renderer...')
         
         if not glfw.init():
             raise Exception("GLFW initialization failed")
@@ -120,13 +151,27 @@ class PICRenderer:
 
         glfw.make_context_current(self.window)
 
-        # Initialize particle rendering
-        self.init_particle_rendering()
+        # Initialize rendering based on renderer type
+        if self.renderer_type == "particles":
+            self.init_particle_rendering()
+        elif self.renderer_type == "heatmap":
+            self.init_heatmap_rendering()
 
         # Initialize text rendering
         self.init_text_rendering()
 
         glfw.swap_interval(0)
+
+    def set_renderer_type(self, renderer_type):
+        """Change the rendering mode between particles and heatmap."""
+        self.renderer_type = renderer_type
+        if self.renderer_type == "particles":
+            self.init_particle_rendering()
+        elif self.renderer_type == "heatmap":
+            self.init_heatmap_rendering()
+
+    # Other methods...
+
 
     def init_particle_rendering(self):
         vertex_shader = shaders.compileShader(PARTICLE_VERTEX_SHADER, GL_VERTEX_SHADER)
@@ -195,6 +240,28 @@ class PICRenderer:
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
 
+    def init_heatmap_rendering(self):
+        vertex_shader = shaders.compileShader(HEATMAP_VERTEX_SHADER, GL_VERTEX_SHADER)
+        fragment_shader = shaders.compileShader(HEATMAP_FRAGMENT_SHADER, GL_FRAGMENT_SHADER)
+        self.heatmap_shader_program = shaders.compileProgram(vertex_shader, fragment_shader)
+        
+        self.heatmap_vao = glGenVertexArrays(1)
+        glBindVertexArray(self.heatmap_vao)
+
+        self.heatmap_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.heatmap_vbo)
+
+        position_attrib = glGetAttribLocation(self.heatmap_shader_program, "position")
+        glEnableVertexAttribArray(position_attrib)
+        glVertexAttribPointer(position_attrib, 2, GL_FLOAT, GL_FALSE, 12, ctypes.c_void_p(0))
+
+        intensity_attrib = glGetAttribLocation(self.heatmap_shader_program, "intensity")
+        glEnableVertexAttribArray(intensity_attrib)
+        glVertexAttribPointer(intensity_attrib, 1, GL_FLOAT, GL_FALSE, 12, ctypes.c_void_p(8))
+        
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        glBindVertexArray(0)
+
     def update_particles(self, particle_positions, particle_types):
         assert particle_positions.shape[0] == 2, "Position shape should be (2, n)"
         assert particle_positions.shape[1] == particle_types.shape[0], "Number of positions and types should match"
@@ -229,6 +296,46 @@ class PICRenderer:
         """
         self.text_content[key] = content
 
+    def reshape_cupy_1d_to_2d(self, data_1d, rows, cols):
+        # Reshape CuPy 1D data into 2D grid
+        return cp.reshape(data_1d, (rows, cols))
+    
+    def update_heatmap(self, data_1d_cupy, rows, cols):
+        
+        # Reshape the CuPy 1D data to 2D
+        heatmap_data_cupy = data_1d_cupy.reshape((rows, cols))
+        
+        # Normalize intensity values between 0 and 1 (optional: based on your data's range)
+        heatmap_min = cp.min(heatmap_data_cupy)
+        heatmap_max = cp.max(heatmap_data_cupy)
+        heatmap_data_cupy_normalized = (heatmap_data_cupy - heatmap_min) / (heatmap_max - heatmap_min)
+        
+        # Create OpenGL positions using broadcasting and vectorized operations
+        x_vals = cp.linspace(-1, 1, cols)
+        y_vals = cp.linspace(-1, 1, rows)
+        
+        # Generate grid of positions
+        x_grid, y_grid = cp.meshgrid(x_vals, y_vals)
+        
+        # Flatten the grids into 1D arrays for OpenGL
+        positions_cupy = cp.column_stack((x_grid.ravel(), y_grid.ravel())).astype(cp.float32)
+        
+        # Flatten the normalized intensities from the reshaped data
+        intensities_cupy = heatmap_data_cupy_normalized.ravel().astype(cp.float32)
+        
+        # Combine positions and intensities into a single buffer (CuPy)
+        heatmap_data_cupy_combined = cp.column_stack((positions_cupy, intensities_cupy))
+        
+        # Transfer data from GPU (CuPy) to CPU (NumPy) for OpenGL
+        heatmap_data_cpu_combined = heatmap_data_cupy_combined.get()
+
+        # Update the OpenGL buffer with CPU data
+        glBindBuffer(GL_ARRAY_BUFFER, self.heatmap_vbo)
+        glBufferData(GL_ARRAY_BUFFER, heatmap_data_cpu_combined.nbytes, heatmap_data_cpu_combined, GL_STATIC_DRAW)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        
+        # Update the number of heatmap cells to render
+        self.num_heatmap_cells = len(positions_cupy)
     def render_particles(self):
         glUseProgram(self.particle_shader_program)
         glBindVertexArray(self.particle_vao)
@@ -262,20 +369,29 @@ class PICRenderer:
         glBindVertexArray(0)
         glBindTexture(GL_TEXTURE_2D, 0)
 
+    def render_heatmap(self):
+        glUseProgram(self.heatmap_shader_program)
+        glBindVertexArray(self.heatmap_vao)
+        glDrawArrays(GL_POINTS, 0, self.num_heatmap_cells)
+        glBindVertexArray(0)
+
     def render(self, clear=True):
         if clear:
             glClear(GL_COLOR_BUFFER_BIT)
             glClearColor(0.0, 0.0, 0.0, 1.0)  # Black background
-        
-        self.render_particles()
-        
+
+        if self.renderer_type == "particles":
+            self.render_particles()
+        elif self.renderer_type == "heatmap":
+            self.render_heatmap()
+
         # Render all text entries
         for content in self.text_content.values():
             self.render_text(content['text'], content['x'], content['y'], content['scale'], content['color'])
-        
+
         glfw.swap_buffers(self.window)
         glfw.poll_events()
-
+    
     def should_close(self):
         return glfw.window_should_close(self.window)
 

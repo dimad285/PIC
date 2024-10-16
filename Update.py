@@ -116,7 +116,7 @@ def updateE_fft(phi_k, kx, ky):
 
 
 def total_kinetic_energy(v:cp.ndarray, M_type:cp.ndarray, part_type:cp.ndarray):
-    return 0.5*cp.sum((v[0]**2 + v[1]**2) * M_type[part_type])
+    return 0.5*cp.dot((v[0]**2 + v[1]**2), M_type[part_type])
 
 def total_potential_energy(rho: cp.ndarray, phi: cp.ndarray, dx: float, dy: float) -> float:
     dV = dx * dy
@@ -158,9 +158,12 @@ def coulumb_collision(rho:cp.ndarray, v:cp.ndarray, gridsize:tuple):
 
 def boundary_field_flux(E:cp.ndarray, gridsize:tuple, X:float, Y:float):
     m, n = gridsize
-    dx = X/m
-    dy = Y/n
+    dx = X/(m - 1)
+    dy = Y/(n - 1)
 
-    F = cp.sum(E[1, :m])*dx + cp.sum(E[1, m*(n-1):])*dx + cp.sum(E[0, ::m])*dy + cp.sum(E[0, m-1::m])*dy
+    F = (-cp.sum(E[1, :m])*dx  # bottom (negative y-direction)
+         + cp.sum(E[1, m*(n-1):])*dx  # top (positive y-direction)
+         - cp.sum(E[0, ::m])*dy  # left (negative x-direction)
+         + cp.sum(E[0, m-1::m])*dy)  # right (positive x-direction)
 
     return F

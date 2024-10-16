@@ -10,7 +10,7 @@ import tkinter as tk
 
 def run_gpu(m, n, X, Y, N, dt,
             boundary = None, RENDER = True, DIAGNOSTICS = False, UI = True, RENDER_FRAME = 1, 
-            SCREEN_SIZE = (512, 512), DIAGNOSTICS_SIZE = (1024, 1024), 
+            SCREEN_SIZE = (512, 512), DIAGNOSTICS_SIZE = (512, 512), 
             solver = 'inverse', DIAG_TYPE = 'line', bins = 64):
     
     print('Starting...')
@@ -87,8 +87,9 @@ def run_gpu(m, n, X, Y, N, dt,
         RUN = True
     
     if RENDER:
-        print('creating renderer...')
-        renderer = Render.PICRenderer(*SCREEN_SIZE, fontfile)
+        renderer_part = Render.PICRenderer(*SCREEN_SIZE, fontfile, renderer_type="heatmap")
+        if DIAGNOSTICS:
+            renderer_heat = Render.PICRenderer(*SCREEN_SIZE, fontfile, renderer_type="heatmap")
         
     # INIT
     
@@ -103,8 +104,12 @@ def run_gpu(m, n, X, Y, N, dt,
     Update.update_V(R, V, E, part_type, q_type, m_type_1, gridsize, -dt*0.5, X, Y)
 
     if RENDER:
-        renderer.update_particles(R/X, part_type)
-        renderer.render()
+        #renderer_part.update_particles(R/X, part_type)
+        renderer_part.update_heatmap(phi, m, n)
+        renderer_part.render()
+        if DIAGNOSTICS:
+            renderer_heat.update_heatmap(phi, m, n)
+            renderer_heat.render()
 
     print('running...')
     while True:
@@ -135,32 +140,84 @@ def run_gpu(m, n, X, Y, N, dt,
             # RENDER
             framecounter += 1
             if framecounter == RENDER_FRAME and RENDER:
-                renderer.update_particles(R/X, part_type)
-                #renderer.render_text("Hello, World!", x=10, y=10, scale=1.0, color=(1.0, 1.0, 1.0))  # Renders white text
-                renderer.render(clear= not TRACE)
+                #renderer_part.update_particles(R/X, part_type)
+                renderer_part.update_heatmap(phi, m, n)
+                renderer_part.render()
+                if DIAGNOSTICS:
+                    renderer_heat.update_heatmap(phi, m, n)
+                    renderer_heat.render()
+
+
+            if UI:
                 render_time = time.time() - start_time - sim_time
                 KE = Update.total_kinetic_energy(V, m_type, part_type)
                 PE = Update.total_potential_energy(rho, phi, dx, dy)
                 TE = PE + KE
                 P = Update.total_momentum(V, m_type, part_type)
-                renderer.update_text('fps', {
+                FF = Update.boundary_field_flux(E, gridsize, X, Y)
+                Q = cp.sum(rho * dx * dy)
+                
+                renderer_part.update_text('fps', {
                     'text': f"Frame time: {(time.time() - start_time)*1000:.1f} ms",
                     'x': 20,
                     'y': 30,
                     'scale': 0.5,
                     'color': (0, 255, 0)
                 })
-                renderer.update_text('time', {
-                    'text': f"Time: {t:.2e} ms",
+                renderer_part.update_text('time', {
+                    'text': f"Time: {t:.2e} s",
                     'x': 20,
                     'y': 60,
                     'scale': 0.5,
                     'color': (0, 255, 0)
                 })
-                #renderer.change_title(f"Frame time: {(time.time() - start_time)*1000:.2f} ms     Simulation time: {sim_time*1000:.2f} ms     Render time: {render_time*1000:.2f} ms   t: {t:.2e}")
-                #renderer.change_title(f"Kinetic energy: {KE:.2e} J  Potential energy: {PE:.2e} J    Total energy: {TE:.2e} J    Total momentum: {P:.2e} kg*m/s")
+                renderer_part.update_text('Energy', {
+                    'text': f"Energy: {TE:.2e} J",
+                    'x': 20,
+                    'y': 90,
+                    'scale': 0.5,
+                    'color': (0, 255, 0)
+                })
+                renderer_part.update_text('Momentum', {
+                    'text': f"Momentum: {P:.2e} kg*m/s",
+                    'x': 20,
+                    'y': 120,
+                    'scale': 0.5,
+                    'color': (0, 255, 0)
+                })
+                renderer_part.update_text('Field flux', {
+                    'text': f"field flux: {FF:.2e} V",
+                    'x': 20,
+                    'y': 150,
+                    'scale': 0.5,
+                    'color': (0, 255, 0)
+                })
+                renderer_part.update_text('Charge', {
+                    'text': f"Charge: {Q:.2e} coulombs",
+                    'x': 20,
+                    'y': 180,
+                    'scale': 0.5,
+                    'color': (0, 255, 0)
+                })
+                renderer_part.update_text('phi_max', {
+                    'text': f"phi_max: {cp.max(phi):.2e} V",
+                    'x': 20,
+                    'y': 210,
+                    'scale': 0.5,
+                    'color': (0, 255, 0)
+                })
+                renderer_part.update_text('phi_min', {
+                    'text': f"phi_min: {cp.min(phi):.2e} V",
+                    'x': 20,
+                    'y': 240,
+                    'scale': 0.5,
+                    'color': (0, 255, 0)
+                })
+                
+                #renderer_part.change_title(f"Frame time: {(time.time() - start_time)*1000:.2f} ms     Simulation time: {sim_time*1000:.2f} ms     Render time: {render_time*1000:.2f} ms   t: {t:.2e}")
+                #renderer_part.change_title(f"Kinetic energy: {KE:.2e} J  Potential energy: {PE:.2e} J    Total energy: {TE:.2e} J    Total momentum: {P:.2e} kg*m/s")
                
-                if renderer.should_close():
+                if renderer_part.should_close():
                     break
 
                 framecounter = 0
@@ -172,7 +229,9 @@ def run_gpu(m, n, X, Y, N, dt,
             break
 
     if RENDER:
-        renderer.close()
+        renderer_part.close()
+        if DIAGNOSTICS:
+            renderer_heat.close()
         print('Renderer closed')
     if UI and not FINISH:
         ui.destroy()

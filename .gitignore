@@ -199,3 +199,8 @@ pyrightconfig.json
 
 Articles/
 lap.txt
+PIC/
+.vscode/
+PIC.codediagram
+Cuda.code-workspace
+__pycache__/
