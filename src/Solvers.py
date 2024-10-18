@@ -92,6 +92,39 @@ def setup_fft_solver(m, n):
     return k_sq
 
 
+def solve_poisson_fft_3d(rho, k_sq, epsilon0):
+    # Reshape rho to 3D
+    rho_3d = rho.reshape(k_sq.shape)
+   
+    # Compute FFT of charge density
+    rho_k = cp.fft.fftn(rho_3d)
+   
+    # Solve Poisson equation in Fourier space
+    phi_k = rho_k / (k_sq * epsilon0)
+   
+    # Handle k=0 mode (set to average of phi)
+    phi_k[0, 0, 0] = 0
+   
+    # Inverse FFT to get potential
+    phi = cp.fft.ifftn(phi_k).real / (k_sq.shape[0] * k_sq.shape[1] * k_sq.shape[2])
+   
+    return phi.ravel()  # Return as 1D array
+
+def setup_fft_solver_3d(m, n, p):
+    # Create wavenumber arrays
+    kx = 2 * cp.pi * cp.fft.fftfreq(m)
+    ky = 2 * cp.pi * cp.fft.fftfreq(n)
+    kz = 2 * cp.pi * cp.fft.fftfreq(p)
+   
+    # Create 3D wavenumber grid
+    kx_grid, ky_grid, kz_grid = cp.meshgrid(kx, ky, kz, indexing='ij')
+   
+    # Compute k^2, avoiding division by zero at k=0
+    k_sq = kx_grid**2 + ky_grid**2 + kz_grid**2
+    k_sq[0, 0, 0] = 1.0  # Avoid division by zero
+   
+    return k_sq
+
 def solve_poisson_fft(rho, k_sq, epsilon0):
 
     # Reshape rho to 2D

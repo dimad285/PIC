@@ -11,13 +11,19 @@ def parse_config(config_file_path):
     params['CPU'] = config.getboolean('Execution', 'CPU')
     params['GPU'] = config.getboolean('Execution', 'GPU')
     
+    # Grid parameters
+    params['grid_type'] = config.get('Grid', 'type')
     params['m'] = config.getint('Grid', 'm')
     params['n'] = config.getint('Grid', 'n')
+    params['k'] = config.getint('Grid', 'k')
+    
+    # Particle parameters
     params['N'] = config.getint('Particles', 'N')
     params['dt'] = config.getfloat('Time', 'dt')
     params['q'] = config.getfloat('Particles', 'q')
     params['X'] = config.getfloat('Grid', 'X')
     params['Y'] = config.getfloat('Grid', 'Y')
+    params['Z'] = config.getfloat('Grid', 'Z')
     
     # Boundary conditions
     boundary_list = ast.literal_eval(config.get('Boundaries', 'boundarys'))

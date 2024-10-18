@@ -25,7 +25,7 @@ in float vParticleType;
 out vec4 fragColor;
 
 vec3 getColor(float type) {
-    if (type == 0.0) return vec3(1.0, 0.0, 0.0);  // Red
+    if (type == 0.0) return vec3(0.0, 0.0, 0.0);  // Black
     else if (type == 1.0) return vec3(0.0, 1.0, 0.0);  // Green
     else if (type == 2.0) return vec3(1.0, 0.5, 0.0);  // Orange
     else if (type == 3.0) return vec3(1.0, 1.0, 0.0);  // Yellow
@@ -68,7 +68,7 @@ void main()
 }
 """
 
-# Vertex shader for heatmap
+# Update the heatmap vertex shader
 HEATMAP_VERTEX_SHADER = """
 #version 330
 in vec2 position;
@@ -81,7 +81,7 @@ void main() {
 }
 """
 
-# Fragment shader for heatmap
+# The fragment shader remains the same
 HEATMAP_FRAGMENT_SHADER = """
 #version 330
 in float vIntensity;
@@ -94,6 +94,23 @@ vec3 getHeatmapColor(float value) {
 
 void main() {
     fragColor = vec4(getHeatmapColor(vIntensity), 1.0);
+}
+"""
+
+LINE_PLOT_VERTEX_SHADER = """
+#version 330
+in vec2 position;
+void main() {
+    gl_Position = vec4(position, 0.0, 1.0);
+}
+"""
+
+LINE_PLOT_FRAGMENT_SHADER = """
+#version 330
+uniform vec3 lineColor;
+out vec4 fragColor;
+void main() {
+    fragColor = vec4(lineColor, 1.0);
 }
 """
 
@@ -156,11 +173,17 @@ class PICRenderer:
             self.init_particle_rendering()
         elif self.renderer_type == "heatmap":
             self.init_heatmap_rendering()
+        elif self.renderer_type == "line_plot":
+            self.init_line_plot_rendering()
 
         # Initialize text rendering
         self.init_text_rendering()
 
         glfw.swap_interval(0)
+
+        self.line_plots = {}  # Dictionary to store multiple line plots
+        self.line_colors = {}  # Dictionary to store colors for each line plot
+        self.num_line_points = 0  # Initialize num_line_pointss
 
     def set_renderer_type(self, renderer_type):
         """Change the rendering mode between particles and heatmap."""
@@ -262,6 +285,26 @@ class PICRenderer:
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
 
+    def init_line_plot_rendering(self):
+        """Initialize the rendering pipeline for line plots."""
+        """Initialize the rendering pipeline for line plots."""
+        vertex_shader = shaders.compileShader(LINE_PLOT_VERTEX_SHADER, GL_VERTEX_SHADER)
+        fragment_shader = shaders.compileShader(LINE_PLOT_FRAGMENT_SHADER, GL_FRAGMENT_SHADER)
+        self.line_plot_shader_program = shaders.compileProgram(vertex_shader, fragment_shader)
+        
+        self.line_vao = glGenVertexArrays(1)
+        glBindVertexArray(self.line_vao)
+        
+        self.line_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.line_vbo)
+
+        position_attrib = glGetAttribLocation(self.line_plot_shader_program, "position")
+        glEnableVertexAttribArray(position_attrib)
+        glVertexAttribPointer(position_attrib, 2, GL_FLOAT, GL_FALSE, 0, None)
+        
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        glBindVertexArray(0)
+
     def update_particles(self, particle_positions, particle_types):
         assert particle_positions.shape[0] == 2, "Position shape should be (2, n)"
         assert particle_positions.shape[1] == particle_types.shape[0], "Number of positions and types should match"
@@ -301,41 +344,91 @@ class PICRenderer:
         return cp.reshape(data_1d, (rows, cols))
     
     def update_heatmap(self, data_1d_cupy, rows, cols):
-        
         # Reshape the CuPy 1D data to 2D
         heatmap_data_cupy = data_1d_cupy.reshape((rows, cols))
         
-        # Normalize intensity values between 0 and 1 (optional: based on your data's range)
+        # Normalize intensity values between 0 and 1
         heatmap_min = cp.min(heatmap_data_cupy)
         heatmap_max = cp.max(heatmap_data_cupy)
         heatmap_data_cupy_normalized = (heatmap_data_cupy - heatmap_min) / (heatmap_max - heatmap_min)
         
-        # Create OpenGL positions using broadcasting and vectorized operations
-        x_vals = cp.linspace(-1, 1, cols)
-        y_vals = cp.linspace(-1, 1, rows)
+        # Create vertex data for quads using CuPy operations
+        x = cp.linspace(-1, 1, cols)
+        y = cp.linspace(-1, 1, rows)
+        X, Y = cp.meshgrid(x, y)
         
-        # Generate grid of positions
-        x_grid, y_grid = cp.meshgrid(x_vals, y_vals)
+        # Create vertices for two triangles per grid cell
+        vertices = cp.zeros((rows-1, cols-1, 6, 3), dtype=cp.float32)
         
-        # Flatten the grids into 1D arrays for OpenGL
-        positions_cupy = cp.column_stack((x_grid.ravel(), y_grid.ravel())).astype(cp.float32)
+        vertices[:,:,0,0] = X[:-1,:-1]  # x1
+        vertices[:,:,0,1] = Y[:-1,:-1]  # y1
+        vertices[:,:,0,2] = heatmap_data_cupy_normalized[:-1,:-1]  # i1
         
-        # Flatten the normalized intensities from the reshaped data
-        intensities_cupy = heatmap_data_cupy_normalized.ravel().astype(cp.float32)
+        vertices[:,:,1,0] = X[:-1,1:]   # x2
+        vertices[:,:,1,1] = Y[:-1,:-1]  # y1
+        vertices[:,:,1,2] = heatmap_data_cupy_normalized[:-1,1:]  # i2
         
-        # Combine positions and intensities into a single buffer (CuPy)
-        heatmap_data_cupy_combined = cp.column_stack((positions_cupy, intensities_cupy))
+        vertices[:,:,2,0] = X[1:,:-1]   # x1
+        vertices[:,:,2,1] = Y[1:,:-1]   # y2
+        vertices[:,:,2,2] = heatmap_data_cupy_normalized[1:,:-1]  # i3
+        
+        vertices[:,:,3,0] = X[1:,:-1]   # x1
+        vertices[:,:,3,1] = Y[1:,:-1]   # y2
+        vertices[:,:,3,2] = heatmap_data_cupy_normalized[1:,:-1]  # i3
+        
+        vertices[:,:,4,0] = X[:-1,1:]   # x2
+        vertices[:,:,4,1] = Y[:-1,:-1]  # y1
+        vertices[:,:,4,2] = heatmap_data_cupy_normalized[:-1,1:]  # i2
+        
+        vertices[:,:,5,0] = X[1:,1:]    # x2
+        vertices[:,:,5,1] = Y[1:,:-1]   # y2
+        vertices[:,:,5,2] = heatmap_data_cupy_normalized[1:,1:]   # i4
+        
+        # Reshape to a 2D array of vertices
+        vertices_cupy = vertices.reshape(-1, 3)
         
         # Transfer data from GPU (CuPy) to CPU (NumPy) for OpenGL
-        heatmap_data_cpu_combined = heatmap_data_cupy_combined.get()
+        vertices_cpu = cp.asnumpy(vertices_cupy)
 
         # Update the OpenGL buffer with CPU data
         glBindBuffer(GL_ARRAY_BUFFER, self.heatmap_vbo)
-        glBufferData(GL_ARRAY_BUFFER, heatmap_data_cpu_combined.nbytes, heatmap_data_cpu_combined, GL_STATIC_DRAW)
+        glBufferData(GL_ARRAY_BUFFER, vertices_cpu.nbytes, vertices_cpu, GL_STATIC_DRAW)
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         
-        # Update the number of heatmap cells to render
-        self.num_heatmap_cells = len(positions_cupy)
+        # Update the number of vertices to render
+        self.num_heatmap_vertices = vertices_cpu.shape[0]
+
+    def update_line_data(self, plot_id, x_values, y_values, color=(1.0, 1.0, 1.0)):
+        """Update or add a line plot dataset."""
+        assert len(x_values) == len(y_values), "x and y arrays must have the same length"
+
+        # Ensure x_values and y_values are CuPy arrays
+        x_values = cp.asarray(x_values)
+        y_values = cp.asarray(y_values)
+
+        # Normalize coordinates to OpenGL's -1.0 to 1.0 range
+        x_normalized = 2.0 * (x_values - cp.min(x_values)) / (cp.max(x_values) - cp.min(x_values)) - 1.0
+        y_normalized = 2.0 * (y_values - cp.min(y_values)) / (cp.max(y_values) - cp.min(y_values)) - 1.0
+
+        # Combine into vertex array
+        vertices = cp.column_stack((x_normalized, y_normalized)).astype(cp.float32)
+
+        # Transfer data from GPU (CuPy) to CPU (NumPy) for OpenGL
+        vertices_cpu = cp.asnumpy(vertices)
+
+        # Create a new VBO if this is a new plot_id
+        if plot_id not in self.line_plots:
+            vbo = glGenBuffers(1)
+            self.line_plots[plot_id] = {'vbo': vbo, 'num_points': 0}
+
+        # Update the buffer for this plot_id
+        glBindBuffer(GL_ARRAY_BUFFER, self.line_plots[plot_id]['vbo'])
+        glBufferData(GL_ARRAY_BUFFER, vertices_cpu.nbytes, vertices_cpu, GL_STATIC_DRAW)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+
+        self.line_plots[plot_id]['num_points'] = len(x_values)
+        self.line_colors[plot_id] = color
+
     def render_particles(self):
         glUseProgram(self.particle_shader_program)
         glBindVertexArray(self.particle_vao)
@@ -372,8 +465,27 @@ class PICRenderer:
     def render_heatmap(self):
         glUseProgram(self.heatmap_shader_program)
         glBindVertexArray(self.heatmap_vao)
-        glDrawArrays(GL_POINTS, 0, self.num_heatmap_cells)
+        glDrawArrays(GL_TRIANGLES, 0, self.num_heatmap_vertices)
         glBindVertexArray(0)
+
+    def render_line_plots(self):
+        """Render all line plots."""
+        glUseProgram(self.line_plot_shader_program)
+        
+        for plot_id, plot_data in self.line_plots.items():
+            glBindBuffer(GL_ARRAY_BUFFER, plot_data['vbo'])
+            position_attrib = glGetAttribLocation(self.line_plot_shader_program, "position")
+            glEnableVertexAttribArray(position_attrib)
+            glVertexAttribPointer(position_attrib, 2, GL_FLOAT, GL_FALSE, 0, None)
+
+            # Set the color for this line plot
+            color_loc = glGetUniformLocation(self.line_plot_shader_program, "lineColor")
+            glUniform3f(color_loc, *self.line_colors[plot_id])
+
+            glDrawArrays(GL_LINE_STRIP, 0, plot_data['num_points'])
+            
+            glDisableVertexAttribArray(position_attrib)
+            glBindBuffer(GL_ARRAY_BUFFER, 0)
 
     def render(self, clear=True):
         if clear:
@@ -384,7 +496,8 @@ class PICRenderer:
             self.render_particles()
         elif self.renderer_type == "heatmap":
             self.render_heatmap()
-
+        elif self.renderer_type == "line_plot":
+            self.render_line_plots()
         # Render all text entries
         for content in self.text_content.values():
             self.render_text(content['text'], content['x'], content['y'], content['scale'], content['color'])
