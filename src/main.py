@@ -1,13 +1,14 @@
-import sys
-from Parser import parse_config
 import cupy as cp
 import numpy as np
 import time
-import Render
-import Update
-import Solvers
-import Consts
+import src.Render as Render
+import src.Update as Update
+import src.Solvers as Solvers
+import src.Consts as Consts
 import tkinter as tk
+from src.Parser import parse_config
+import sys
+
 
 def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, grid_type='2d',
             boundary = None, RENDER = True, DIAGNOSTICS = False, UI = True, RENDER_FRAME = 1, 
@@ -296,22 +297,24 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
 
 
 
-config = parse_config('input.ini')
-# Use parsed parameters
-CPU = config['CPU']
-GPU = config['GPU']
-m = config['m']
-n = config['n']
-k = config['k']
-N = config['N']
-dt = config['dt']
-q = config['q']
-X = config['X']
-Y = config['Y']
-Z = config['Z']
-boundarys = config['boundarys']
 
 if __name__ == "__main__":
+
+    config = parse_config('input.ini')
+    # Use parsed parameters
+    CPU = config['CPU']
+    GPU = config['GPU']
+    m = config['m']
+    n = config['n']
+    k = config['k']
+    N = config['N']
+    dt = config['dt']
+    q = config['q']
+    X = config['X']
+    Y = config['Y']
+    Z = config['Z']
+    boundarys = config['boundarys']
+
     sys.exit(run_gpu(m, n, k, X, Y, Z, N, dt, grid_type=config['grid_type'],
                             boundary=None, 
                             RENDER=config['RENDER'], 
