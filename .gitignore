@@ -197,8 +197,5 @@ pyrightconfig.json
 
 # Misc
 
-Articles/
-PIC/
 .vscode/
-Cuda.code-workspace
 src/__pycache__/
