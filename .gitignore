@@ -198,7 +198,6 @@ pyrightconfig.json
 # Misc
 
 Articles/
-Articles/attachment.pdf
 PIC/
 .vscode/
 Cuda.code-workspace
