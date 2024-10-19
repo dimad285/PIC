@@ -236,6 +236,23 @@ def updateE_fft(phi_k, kx, ky):
     Ey = cp.fft.ifftn(Ey_k).real
     return cp.array([Ex.ravel(), Ey.ravel()])
 
+def update_kinetic_energy(V, M, part_type):
+    return 0.5 * (V[0]**2 + V[1]**2) * M[part_type]
+
+def update_crossection(E):
+    pass
+
+def MCC(R, V, part_type, M, NGD, P, dt):
+
+    E = 0.5 * (V[0]**2 + V[1]**2) * M[part_type]
+    v = cp.hypot(V[0], V[1])
+    sigma = update_crossection(E)
+    P[:] = 1 - cp.exp(-dt * NGD * sigma * v)
+
+
+
+
+
 
 def total_kinetic_energy(v:cp.ndarray, M_type:cp.ndarray, part_type:cp.ndarray):
     return 0.5*cp.dot((v[0]**2 + v[1]**2), M_type[part_type])

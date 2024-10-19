@@ -169,13 +169,18 @@ class PICRenderer:
         glfw.make_context_current(self.window)
 
         # Initialize rendering based on renderer type
+        '''
         if self.renderer_type == "particles":
             self.init_particle_rendering()
         elif self.renderer_type == "heatmap":
             self.init_heatmap_rendering()
         elif self.renderer_type == "line_plot":
             self.init_line_plot_rendering()
+        '''
 
+        self.init_particle_rendering()
+        self.init_heatmap_rendering()
+        self.init_line_plot_rendering()
         # Initialize text rendering
         self.init_text_rendering()
 

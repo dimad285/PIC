@@ -10,6 +10,25 @@ from src.Parser import parse_config
 import sys
 
 
+def update_legend(renderer, label, text, y_pos, color=(0, 255, 0), x_pos=20, scale=0.5):
+    renderer.update_text(label, {
+        'text': text,
+        'x': x_pos,
+        'y': y_pos,
+        'scale': scale,
+        'color': color
+    })
+
+def clear_legend_entries(renderer, labels):
+    for label in labels:
+        renderer.update_text(label, {
+            'text': '',  # Set the text to an empty string
+            'x': 0,  # Optionally reset position if needed
+            'y': 0,  # Optionally reset position if needed
+            'scale': 0.5,
+            'color': (0, 0, 0)  # Optionally set the color to black or leave as is
+        })
+
 def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, grid_type='2d',
             boundary = None, RENDER = True, DIAGNOSTICS = False, UI = True, RENDER_FRAME = 1, 
             SCREEN_SIZE = (512, 512), DIAGNOSTICS_SIZE = (512, 512), 
@@ -21,9 +40,13 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
     global RUN
     global FINISH
     global TRACE
+    global TEXTUI
+    TEXTUI = True
     TRACE = False
     FINISH = False
     RUN = False
+    global selected_render_type
+    selected_render_type = "particles"  # default render type
     framecounter = 0
     t = 0
 
@@ -104,22 +127,45 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
             global TRACE
             TRACE = not TRACE
 
+        def toggle_textui():
+            global TEXTUI
+            TEXTUI = not TEXTUI
+
+        def update_render_type(event):
+            global selected_render_type
+            selection = render_listbox.get(render_listbox.curselection())
+            selected_render_type = selection
+            print(f"Render type changed to: {selected_render_type}")
+
         ui = tk.Tk()
-        ui.geometry('256x256')
+        ui.geometry('300x300')
         ui.title("PIC Simulation Control")
+
         button = tk.Button(ui, text="Start", command=toggle_simulation)
         button_trace = tk.Button(ui, text="Trace", command=toggle_trace)
-        button.pack(pady=20)
-        button_trace.pack(pady=20)
+        button_textui = tk.Button(ui, text="Text", command=toggle_textui)
+        button.pack(pady=10)
+        button_trace.pack(pady=10)
+        button_textui.pack(pady=10)
+
+        render_listbox = tk.Listbox(ui)
+        render_listbox.insert(1, "particles")
+        render_listbox.insert(2, "heatmap")
+        render_listbox.insert(3, "line_plot")
+        render_listbox.pack(pady=10)
+        
+        # Bind listbox selection to the update_render_type function
+        render_listbox.bind('<<ListboxSelect>>', update_render_type)
+
         ui.protocol("WM_DELETE_WINDOW", close_window)
     
     else:
         RUN = True
     
     if RENDER:
-        renderer_part = Render.PICRenderer(*SCREEN_SIZE, fontfile, renderer_type="particles")
+        renderer = Render.PICRenderer(*SCREEN_SIZE, fontfile, renderer_type=selected_render_type)
         if DIAGNOSTICS:
-            renderer_heat = Render.PICRenderer(*SCREEN_SIZE, fontfile, renderer_type="heatmap")
+            renderer = Render.PICRenderer(*SCREEN_SIZE, fontfile, renderer_type="heatmap")
         
     # INIT
     
@@ -142,13 +188,13 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
         Update.update_V_3d(R, V, E, part_type, q_type, m_type_1, gridsize, -dt*0.5, X, Y, Z)
 
     if RENDER:
-        #renderer_part.update_particles(R/X, part_type)
-        #renderer_part.update_heatmap(phi, m, n)
-        #renderer_part.update_heatmap(phi, m, n)
-        #renderer_part.render()
+        #renderer.update_particles(R/X, part_type)
+        #renderer.update_heatmap(phi, m, n)
+        #renderer.update_heatmap(phi, m, n)
+        #renderer.render()
         if DIAGNOSTICS:
-            renderer_heat.update_heatmap(phi, m, n)
-            renderer_heat.render()
+            renderer.update_heatmap(phi, m, n)
+            renderer.render()
 
     print('running...')
     while True:
@@ -201,80 +247,47 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                 hystory_y = cp.append(hystory_y, TE)
                 hystory_y2 = cp.append(hystory_y2, P)
                 R_2d = cp.array([R[0]/X, R[1]/Y])
-                renderer_part.update_particles(R_2d, part_type)
-                #renderer_part.update_heatmap(phi, m, n)
-                #renderer_part.update_line_data('Energy', hystory_x, hystory_y)
-                #renderer_part.update_line_data('Momentum', hystory_x, hystory_y2, color=(0.0, 0.5, 0.5))
-                renderer_part.render()
                 
-                renderer_part.update_text('legend_E', {
-                    'text': 'Energy',
-                    'x': 20,
-                    'y': 300,
-                    'scale': 0.5,
-                    'color': (255, 255, 255)
-                })
-                renderer_part.update_text('legend_P', {
-                    'text': 'Momentum',
-                    'x': 20,
-                    'y': 330,
-                    'scale': 0.5,
-                    'color': (0, 128, 128)
-                })
-                renderer_part.update_text('fps', {
-                    'text': f"Frame time: {(time.time() - start_time)*1000:.1f} ms",
-                    'x': 20,
-                    'y': 30,
-                    'scale': 0.5,
-                    'color': (0, 255, 0)
-                })
-                renderer_part.update_text('time', {
-                    'text': f"Time: {t:.2e} s",
-                    'x': 20,
-                    'y': 60,
-                    'scale': 0.5,
-                    'color': (0, 255, 0)
-                })
-                renderer_part.update_text('Energy', {
-                    'text': f"Energy: {TE:.2e} J",
-                    'x': 20,
-                    'y': 90,
-                    'scale': 0.5,
-                    'color': (0, 255, 0)
-                })
-                renderer_part.update_text('Momentum', {
-                    'text': f"Momentum: {P:.2e} kg*m/s",
-                    'x': 20,
-                    'y': 120,
-                    'scale': 0.5,
-                    'color': (0, 255, 0)
-                })
-                renderer_part.update_text('phi_max', {
-                    'text': f"phi_max: {cp.max(phi):.2e} V",
-                    'x': 20,
-                    'y': 210,
-                    'scale': 0.5,
-                    'color': (0, 255, 0)
-                })
-                renderer_part.update_text('phi_min', {
-                    'text': f"phi_min: {cp.min(phi):.2e} V",
-                    'x': 20,
-                    'y': 240,
-                    'scale': 0.5,
-                    'color': (0, 255, 0)
-                })
+                if selected_render_type == "particles":
+                    renderer.renderer_type = "particles"
+                    renderer.update_particles(R_2d, part_type)
+                elif selected_render_type == "heatmap" and grid_type == '2d':
+                    renderer.renderer_type = "heatmap"
+                    renderer.update_heatmap(phi, m, n)
+                elif selected_render_type == "line_plot":
+                    renderer.renderer_type = "line_plot"
+                    renderer.update_line_data('Energy', hystory_x, hystory_y)
+                    renderer.update_line_data('Momentum', hystory_x, hystory_y2, color=(0.0, 0.5, 0.5))
+
+                renderer.render()
+                
+                if TEXTUI:
+
+                    update_legend(renderer, 'legend_E', 'Energy', 300, color=(255, 255, 255))
+                    update_legend(renderer, 'legend_P', 'Momentum', 330, color=(0, 128, 128))
+                    update_legend(renderer, 'fps', f"Frame time: {(time.time() - start_time)*1000:.1f} ms", 30)
+                    update_legend(renderer, 'time', f"Time: {t:.2e} s", 60)
+                    update_legend(renderer, 'Energy', f"Energy: {TE:.2e} J", 90)
+                    update_legend(renderer, 'Momentum', f"Momentum: {P:.2e} kg*m/s", 120)
+                    update_legend(renderer, 'phi_max', f"phi_max: {cp.max(phi):.2e} V", 210)
+                    update_legend(renderer, 'phi_min', f"phi_min: {cp.min(phi):.2e} V", 240)
+
+                else:
+
+                    clear_legend_entries(renderer, ['legend_E', 'legend_P', 'fps', 'time', 'Energy', 'Momentum', 'phi_max', 'phi_min'])
+
                 if DIAGNOSTICS:
-                    renderer_heat.update_heatmap(phi, m, n)
-                    renderer_heat.render()
+                    renderer.update_heatmap(phi, m, n)
+                    renderer.render()
 
 
             if UI:
                 
                 
-                #renderer_part.change_title(f"Frame time: {(time.time() - start_time)*1000:.2f} ms     Simulation time: {sim_time*1000:.2f} ms     Render time: {render_time*1000:.2f} ms   t: {t:.2e}")
-                #renderer_part.change_title(f"Kinetic energy: {KE:.2e} J  Potential energy: {PE:.2e} J    Total energy: {TE:.2e} J    Total momentum: {P:.2e} kg*m/s")
+                #renderer.change_title(f"Frame time: {(time.time() - start_time)*1000:.2f} ms     Simulation time: {sim_time*1000:.2f} ms     Render time: {render_time*1000:.2f} ms   t: {t:.2e}")
+                #renderer.change_title(f"Kinetic energy: {KE:.2e} J  Potential energy: {PE:.2e} J    Total energy: {TE:.2e} J    Total momentum: {P:.2e} kg*m/s")
                
-                if renderer_part.should_close():
+                if renderer.should_close():
                     break
 
                 framecounter = 0
@@ -286,9 +299,9 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
             break
 
     if RENDER:
-        renderer_part.close()
+        renderer.close()
         if DIAGNOSTICS:
-            renderer_heat.close()
+            renderer.close()
         print('Renderer closed')
     if UI and not FINISH:
         ui.destroy()

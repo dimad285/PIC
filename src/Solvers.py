@@ -1,34 +1,30 @@
 import cupy as cp
+import numpy as np
 
-def boundary_array(input:tuple, gridsize:tuple) -> cp.ndarray:
-    boundary = [[],[]]
+def boundary_array(input: tuple, gridsize: tuple) -> cp.ndarray:
+    boundary = [[], []]
+    
     for i in input:
         m1, n1, m2, n2 = i[0]
-        dm = (m2 - m1)
-        if dm > 0:
-            dm = 1
-        elif dm < 0:
-            dm = -1
-        else:
-            dm = 0
-        dn = (n2 - n1)
-        if dn > 0:
-            dn = 1
-        elif dn < 0:
-            dn = -1
-        else:
-            dn = 0
-        x = m1
-        y = n1
+        V = i[1]
+        # Compute direction steps using np.sign
+        dm = np.sign(m2 - m1)
+        dn = np.sign(n2 - n1)
+        
+        x, y = m1, n1
+        
+        # Iterate over the boundary points
         while True:
-            boundary[0].append(y*gridsize[0]+x)
-            boundary[1].append(i[1])
-            x = int(x+dm)
-            y = int(y+dn)
-            #print(x, y)
+            boundary[0].append(y * gridsize[0] + x)
+            boundary[1].append(V)
+            
+            # Update x and y
+            x += dm
+            y += dn
+            
             if x == m2 and y == n2:
-                boundary[0].append(y*gridsize[0]+x)
-                boundary[1].append(i[1])
+                boundary[0].append(y * gridsize[0] + x)
+                boundary[1].append(V)
                 break
     
     return cp.asarray(boundary, dtype=cp.int32)
@@ -56,6 +52,7 @@ def Laplacian_square(m, n) -> cp.ndarray:
                 Lap[idx, idx-m] = 1
             if i<n-1:
                 Lap[idx, idx+m] = 1
+                
     return Lap.astype(cp.float32)
 
 
