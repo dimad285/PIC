@@ -199,3 +199,5 @@ pyrightconfig.json
 
 .vscode/
 src/__pycache__/
+output/
+test/

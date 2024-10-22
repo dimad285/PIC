@@ -5,15 +5,32 @@ from OpenGL.GL import *
 import OpenGL.GL.shaders as shaders
 import ctypes
 import freetype
+import glm
 
 # Vertex shader for particles
-PARTICLE_VERTEX_SHADER = """
+PARTICLE_VERTEX_SHADER_2D = """
 #version 330
 in vec2 position;
 in float particleType;
 out float vParticleType;
 void main() {
     gl_Position = vec4(position, 0.0, 1.0);
+    vParticleType = particleType;
+}
+"""
+
+PARTICLE_VERTEX_SHADER_3D = """
+#version 330
+in vec3 position;
+in float particleType;
+out float vParticleType;
+
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
+
+void main() {
+    gl_Position = projection * view * model * vec4(position, 1.0);
     vParticleType = particleType;
 }
 """
@@ -114,6 +131,41 @@ void main() {
 }
 """
 
+
+SURFACE_VERTEX_SHADER = """
+#version 330 core
+layout(location = 0) in vec3 aPosition;
+
+uniform mat4 projection;
+uniform mat4 view;
+uniform mat4 model;
+
+out float vertexZ;  // Pass the Z-coordinate to the fragment shader
+
+void main() {
+    gl_Position = projection * view * model * vec4(aPosition, 1.0);
+    vertexZ = aPosition.z;  // Pass the Z-coordinate
+}
+"""
+
+SURFACE_FRAGMENT_SHADER = """
+#version 330 core
+
+in float vertexZ;  // Receive the Z-coordinate from the vertex shader
+out vec4 fragColor;
+
+uniform float zMin;  // Minimum Z value (to normalize)
+uniform float zMax;  // Maximum Z value (to normalize)
+
+void main() {
+    float normalizedZ = (vertexZ - zMin) / (zMax - zMin);
+    vec3 lowColor = vec3(0.0, 0.0, 1.0);  // Blue
+    vec3 highColor = vec3(1.0, 0.0, 0.0);  // Red
+    vec3 finalColor = mix(lowColor, highColor, normalizedZ);
+    fragColor = vec4(finalColor, 1.0);  // Final color with full opacity
+}
+"""
+
 class CharacterSlot:
     def __init__(self, texture, glyph):
         self.texture = texture
@@ -149,13 +201,41 @@ def ortho_matrix(left, right, bottom, top, near, far):
     m[3, 3] = 1
     return m
 
+def get_projection_matrix(fov, aspect, near, far):
+    """Create a perspective projection matrix."""
+    f = 1.0 / np.tan(fov / 2)
+    proj = np.array([
+        [f/aspect, 0, 0, 0],
+        [0, f, 0, 0],
+        [0, 0, (far + near) / (near - far), -1],
+        [0, 0, (2 * far * near) / (near - far), 0]
+    ], dtype=np.float32)
+    return proj
+
+def get_view_matrix(eye, center, up):
+    """Create a view matrix for the camera."""
+    f = (center - eye) / np.linalg.norm(center - eye)
+    s = np.cross(f, up) / np.linalg.norm(np.cross(f, up))
+    u = np.cross(s, f)
+    
+    view = np.eye(4, dtype=np.float32)
+    view[0, :3] = s
+    view[1, :3] = u
+    view[2, :3] = -f
+    view[0, 3] = -np.dot(s, eye)
+    view[1, 3] = -np.dot(u, eye)
+    view[2, 3] = np.dot(f, eye)
+    
+    return view
+
 class PICRenderer:
-    def __init__(self, width, height, fontfile, renderer_type="particles"):
+    def __init__(self, width, height, fontfile, renderer_type="particles", is_3d = False):
         self.width = width
         self.height = height
         self.fontfile = fontfile
         self.renderer_type = renderer_type  # Choose either 'particles' or 'heatmap'
         self.text_content = {}
+        self.is_3d = is_3d
         print(f'Initializing {renderer_type} PIC Renderer...')
         
         if not glfw.init():
@@ -181,6 +261,7 @@ class PICRenderer:
         self.init_particle_rendering()
         self.init_heatmap_rendering()
         self.init_line_plot_rendering()
+        self.init_surface_rendering()
         # Initialize text rendering
         self.init_text_rendering()
 
@@ -190,19 +271,26 @@ class PICRenderer:
         self.line_colors = {}  # Dictionary to store colors for each line plot
         self.num_line_points = 0  # Initialize num_line_pointss
 
-    def set_renderer_type(self, renderer_type):
-        """Change the rendering mode between particles and heatmap."""
+    def set_renderer_type(self, renderer_type, is_3d=False):
+        """Set the renderer type and whether it's 2D or 3D."""
         self.renderer_type = renderer_type
-        if self.renderer_type == "particles":
-            self.init_particle_rendering()
-        elif self.renderer_type == "heatmap":
-            self.init_heatmap_rendering()
+        self.is_3d = is_3d  # Boolean to control 2D or 3D mode
+        self.init_particle_rendering(is_3d=is_3d)
 
+    def set_fov(self, fov):
+        self.fov = fov
+
+    def set_camera(self, eye):
+        self.eye = eye
     # Other methods...
 
 
-    def init_particle_rendering(self):
-        vertex_shader = shaders.compileShader(PARTICLE_VERTEX_SHADER, GL_VERTEX_SHADER)
+    def init_particle_rendering(self, is_3d=False):
+        if is_3d:
+            vertex_shader = shaders.compileShader(PARTICLE_VERTEX_SHADER_3D, GL_VERTEX_SHADER)
+        else:
+            vertex_shader = shaders.compileShader(PARTICLE_VERTEX_SHADER_2D, GL_VERTEX_SHADER)
+        
         fragment_shader = shaders.compileShader(PARTICLE_FRAGMENT_SHADER, GL_FRAGMENT_SHADER)
         self.particle_shader_program = shaders.compileProgram(vertex_shader, fragment_shader)
         
@@ -212,13 +300,18 @@ class PICRenderer:
         self.particle_vbo = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self.particle_vbo)
         
-        position_attrib = glGetAttribLocation(self.particle_shader_program, "position")
-        glEnableVertexAttribArray(position_attrib)
-        glVertexAttribPointer(position_attrib, 2, GL_FLOAT, GL_FALSE, 12, ctypes.c_void_p(0))
+        if is_3d:
+            position_attrib = glGetAttribLocation(self.particle_shader_program, "position")
+            glEnableVertexAttribArray(position_attrib)
+            glVertexAttribPointer(position_attrib, 3, GL_FLOAT, GL_FALSE, 16, ctypes.c_void_p(0))
+        else:
+            position_attrib = glGetAttribLocation(self.particle_shader_program, "position")
+            glEnableVertexAttribArray(position_attrib)
+            glVertexAttribPointer(position_attrib, 2, GL_FLOAT, GL_FALSE, 12, ctypes.c_void_p(0))
         
         type_attrib = glGetAttribLocation(self.particle_shader_program, "particleType")
         glEnableVertexAttribArray(type_attrib)
-        glVertexAttribPointer(type_attrib, 1, GL_FLOAT, GL_FALSE, 12, ctypes.c_void_p(8))
+        glVertexAttribPointer(type_attrib, 1, GL_FLOAT, GL_FALSE, 12 if not is_3d else 16, ctypes.c_void_p(8))
         
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
@@ -310,14 +403,38 @@ class PICRenderer:
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
 
-    def update_particles(self, particle_positions, particle_types):
-        assert particle_positions.shape[0] == 2, "Position shape should be (2, n)"
-        assert particle_positions.shape[1] == particle_types.shape[0], "Number of positions and types should match"
+
+    def init_surface_rendering(self):
+        vertex_shader = shaders.compileShader(SURFACE_VERTEX_SHADER, GL_VERTEX_SHADER)
+        fragment_shader = shaders.compileShader(SURFACE_FRAGMENT_SHADER, GL_FRAGMENT_SHADER)
+        self.surface_shader_program = shaders.compileProgram(vertex_shader, fragment_shader)
         
+        self.surface_vao = glGenVertexArrays(1)
+        glBindVertexArray(self.surface_vao)
+
+        self.surface_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.surface_vbo)
+
+        position_attrib = glGetAttribLocation(self.surface_shader_program, "aPosition")
+        glEnableVertexAttribArray(position_attrib)
+        glVertexAttribPointer(position_attrib, 3, GL_FLOAT, GL_FALSE, 0, None)
+        
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        glBindVertexArray(0)
+
+    def update_particles(self, particle_positions, particle_types):
+        if self.is_3d:
+            assert particle_positions.shape[0] == 3, "Position shape should be (3, n)"
+            assert particle_positions.shape[1] == particle_types.shape[0], "Number of positions and types should match"
+        else:
+            assert particle_positions.shape[0] == 2, "Position shape should be (2, n)"
+            assert particle_positions.shape[1] == particle_types.shape[0], "Number of positions and types should match"
+            
         gl_positions = 2.0 * particle_positions - 1.0
         gl_positions = cp.ascontiguousarray(gl_positions.T).astype(cp.float32)
         
         particle_data = cp.column_stack((gl_positions, particle_types.astype(cp.float32)))
+
         
         particle_data_cpu = particle_data.get()
         
@@ -434,6 +551,48 @@ class PICRenderer:
         self.line_plots[plot_id]['num_points'] = len(x_values)
         self.line_colors[plot_id] = color
 
+    def update_surface(self, X, Y, Z):
+
+        self.z_min = np.min(Z)
+        self.z_max = np.max(Z)
+
+        def generate_vertices(X, Y, Z):
+            # Ensure that X, Y, Z are 2D arrays
+            assert X.shape == Y.shape == Z.shape, "X, Y, and Z must have the same shape"
+
+            # Generate the 4 corners for each quad (2 triangles per quad)
+            X1 = X[:-1, :-1]
+            X2 = X[1:, :-1]
+            X3 = X[:-1, 1:]
+            X4 = X[1:, 1:]
+
+            Y1 = Y[:-1, :-1]
+            Y2 = Y[1:, :-1]
+            Y3 = Y[:-1, 1:]
+            Y4 = Y[1:, 1:]
+
+            Z1 = Z[:-1, :-1]
+            Z2 = Z[1:, :-1]
+            Z3 = Z[:-1, 1:]
+            Z4 = Z[1:, 1:]
+
+            # Stack arrays for the first triangle (v1, v2, v3) and the second triangle (v2, v4, v3)
+            tri1 = np.dstack([X1, Y1, Z1, X2, Y2, Z2, X3, Y3, Z3]).reshape(-1, 3)
+            tri2 = np.dstack([X2, Y2, Z2, X4, Y4, Z4, X3, Y3, Z3]).reshape(-1, 3)
+
+            # Combine both triangles into a single array
+            vertices = np.vstack([tri1, tri2])
+
+            return vertices.astype(np.float32)
+
+        vertices = generate_vertices(X, Y, Z)
+        self.num_surface_vertices = vertices.shape[0]  # Each row is a vertex (x, y, z)
+
+        # Bind and update OpenGL buffer
+        glBindBuffer(GL_ARRAY_BUFFER, self.surface_vbo)
+        glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_STATIC_DRAW)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+
     def render_particles(self):
         glUseProgram(self.particle_shader_program)
         glBindVertexArray(self.particle_vao)
@@ -492,20 +651,49 @@ class PICRenderer:
             glDisableVertexAttribArray(position_attrib)
             glBindBuffer(GL_ARRAY_BUFFER, 0)
 
-    def render(self, clear=True):
+    def render_surface(self, z_min, z_max, fov=45.0, cam_pos=(10.0, 10.0, 10.0)):
+        glUseProgram(self.surface_shader_program)
+        
+        # Set up projection, view, and model matrices
+        projection = glm.perspective(glm.radians(fov), 800/600, 0.1, 100.0)
+        view = glm.lookAt(glm.vec3(cam_pos), glm.vec3(0.0, 0.0, 0.0), glm.vec3(0.0, 0.0, 10.0))
+        model = glm.mat4(1.0)
+
+        glUniformMatrix4fv(glGetUniformLocation(self.surface_shader_program, "projection"), 1, GL_FALSE, glm.value_ptr(projection))
+        glUniformMatrix4fv(glGetUniformLocation(self.surface_shader_program, "view"), 1, GL_FALSE, glm.value_ptr(view))
+        glUniformMatrix4fv(glGetUniformLocation(self.surface_shader_program, "model"), 1, GL_FALSE, glm.value_ptr(model))
+
+        glUniform1f(glGetUniformLocation(self.surface_shader_program, "zMin"), z_min)
+        glUniform1f(glGetUniformLocation(self.surface_shader_program, "zMax"), z_max)
+
+        glBindVertexArray(self.surface_vao)
+        glDrawArrays(GL_TRIANGLES, 0, self.num_surface_vertices)
+        glBindVertexArray(0)
+
+    def render(self, clear=True, TEXT_RENDERING=True, cam_fov=90, cam_pos=np.array([10, 10, 10])):
         if clear:
-            glClear(GL_COLOR_BUFFER_BIT)
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
             glClearColor(0.0, 0.0, 0.0, 1.0)  # Black background
 
         if self.renderer_type == "particles":
+            if self.is_3d:
+                # Set projection and view matrices for 3D
+                glUseProgram(self.particle_shader_program)
+                projection = get_projection_matrix(np.radians(cam_fov), self.width / self.height, 0.1, 100)
+                view = get_view_matrix(cam_pos, np.array([0, 0, 0]), np.array([0, 0, 1]))
+                glUniformMatrix4fv(glGetUniformLocation(self.particle_shader_program, "projection"), 1, GL_FALSE, projection)
+                glUniformMatrix4fv(glGetUniformLocation(self.particle_shader_program, "view"), 1, GL_FALSE, view)
             self.render_particles()
         elif self.renderer_type == "heatmap":
             self.render_heatmap()
         elif self.renderer_type == "line_plot":
             self.render_line_plots()
+        elif self.renderer_type == "surface_plot":
+            self.render_surface(self.z_min, self.z_max, self.fov, self.eye)
         # Render all text entries
-        for content in self.text_content.values():
-            self.render_text(content['text'], content['x'], content['y'], content['scale'], content['color'])
+        if TEXT_RENDERING:
+            for content in self.text_content.values():
+                self.render_text(content['text'], content['x'], content['y'], content['scale'], content['color'])
 
         glfw.swap_buffers(self.window)
         glfw.poll_events()

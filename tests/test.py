@@ -1,11 +1,9 @@
-from PIC import *
+from main import *
 import matplotlib.pyplot as plt
 import numpy as np
 import cupy as cp
 import Update
 import Solvers
-import scipy.sparse
-import Run
 
 
 m = 16  #x axis nodes
