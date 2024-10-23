@@ -73,6 +73,8 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
     # Particle parameters
     
     #M_1 = cp.ones(N, dtype=cp.float32) / Consts.me
+    mcc_probability = cp.zeros(N, dtype=cp.float32)
+    mcc_random = cp.zeros(N, dtype=cp.float32)
     part_type = cp.random.randint(1, 3, N, dtype=cp.int32)
     m_type = cp.array([Consts.mp, Consts.me], dtype=cp.float64)
     m_type_1 = cp.array([0, 1/Consts.mp, 1/Consts.me], dtype=cp.float64)
@@ -153,8 +155,12 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
         render_listbox.insert(1, "particles")
         if grid_type == '2d':
             render_listbox.insert(2, "heatmap")
-            render_listbox.insert(3, "line_plot")
-            render_listbox.insert(4, "surface_plot")
+            render_listbox.insert(3, "line_plot_E")
+            render_listbox.insert(4, "line_plot_P")
+            render_listbox.insert(5, "line_plot_MCC")
+            render_listbox.insert(6, "line_plot_E_distribution")
+            render_listbox.insert(7, "line_plot_V_distribution")
+            render_listbox.insert(8, "surface_plot")
         elif grid_type == '3d':
             render_listbox.insert(2, "line_plot")
         render_listbox.pack(pady=10)
@@ -162,7 +168,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
         # Bind listbox selection to the update_render_type function
         render_listbox.bind('<<ListboxSelect>>', update_render_type)
 
-        fov_slider = tk.Scale(ui, from_=30, to=120, orient='horizontal', label='FOV')
+        fov_slider = tk.Scale(ui, from_=10, to=120, orient='horizontal', label='FOV')
         fov_slider.set(45)  # Set default FOV to 45 degrees
         fov_slider.pack(pady=10)
 
@@ -240,6 +246,9 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                     phi = Solvers.solve_poisson_pcg_gpu(rho, m, n, dx, dy, Consts.eps0)
                 Update.updateE_gpu(E, phi, X, Y, gridsize)
                 Update.update_V(R, V, E, part_type, q_type, m_type_1, gridsize, dt, X, Y)
+                Update.MCC(R, V, part_type, m_type, 1000, mcc_probability, dt)
+                mcc_random[:] = cp.random.random(N)
+                collision = mcc_random < mcc_probability
 
             elif grid_type == '3d':
                 R[:] += V[:] * dt
@@ -277,10 +286,24 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                 elif selected_render_type == "heatmap" and grid_type == '2d':
                     renderer.renderer_type = "heatmap"
                     renderer.update_heatmap(phi, m, n)
-                elif selected_render_type == "line_plot":
+                elif selected_render_type == "line_plot_E":
                     renderer.renderer_type = "line_plot"
                     renderer.update_line_data('Energy', hystory_x, hystory_y)
+                elif selected_render_type == "line_plot_P":
+                    renderer.renderer_type = "line_plot"
                     renderer.update_line_data('Momentum', hystory_x, hystory_y2, color=(0.0, 0.5, 0.5))
+                elif selected_render_type == "line_plot_MCC":
+                    renderer.renderer_type = "line_plot"
+                    dist_x, dist_y = Update.compute_probability_distribution(mcc_probability, num_bins=128)
+                    renderer.update_line_data('MCC', dist_x[1:], dist_y[1:])
+                elif selected_render_type == "line_plot_E_distribution":
+                    renderer.renderer_type = "line_plot"
+                    dist_x, dist_y = Update.KE_distribution(part_type= part_type, v=V, M=m_type, bins=128)
+                    renderer.update_line_data('E_distribution', dist_x, dist_y)
+                elif selected_render_type == "line_plot_V_distribution":
+                    renderer.renderer_type = "line_plot"
+                    dist_x, dist_y = Update.V_distribution(V, bins=128)
+                    renderer.update_line_data('V_distribution', dist_x, dist_y)
                 elif selected_render_type == "surface_plot":
                     surf_scale = plot_scale_slider.get()
                     renderer.renderer_type = "surface_plot"

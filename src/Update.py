@@ -236,11 +236,11 @@ def updateE_fft(phi_k, kx, ky):
     Ey = cp.fft.ifftn(Ey_k).real
     return cp.array([Ex.ravel(), Ey.ravel()])
 
-def update_kinetic_energy(V, M, part_type):
+def kinetic_energy(V, M, part_type):
     return 0.5 * (V[0]**2 + V[1]**2) * M[part_type]
 
 def update_crossection(E):
-    pass
+    return 1
 
 def MCC(R, V, part_type, M, NGD, P, dt):
 
@@ -251,7 +251,28 @@ def MCC(R, V, part_type, M, NGD, P, dt):
 
 
 
+def compute_probability_distribution(probabilities, num_bins=50):
+    """
+    Compute the x (bin edges) and y (counts) arrays for the probability distribution.
 
+    Parameters:
+    probabilities (cupy.ndarray): Array of precomputed collision probabilities.
+    num_bins (int): Number of bins for the histogram.
+
+    Returns:
+    bin_centers (numpy.ndarray): The centers of the histogram bins (x values).
+    hist (numpy.ndarray): The histogram counts (y values).
+    """
+    # Convert CuPy array to NumPy for histogram computation
+    probabilities_np = cp.asnumpy(probabilities)
+
+    # Compute histogram
+    hist, bin_edges = np.histogram(probabilities_np, bins=num_bins, density=True)
+
+    # Compute bin centers from bin edges
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    return bin_centers, hist
 
 
 def total_kinetic_energy(v:cp.ndarray, M_type:cp.ndarray, part_type:cp.ndarray):
@@ -266,8 +287,8 @@ def total_potential_energy(rho: cp.ndarray, phi: cp.ndarray, dx: float, dy: floa
 def total_momentum(v:cp.ndarray, M:cp.ndarray, part_type:cp.ndarray):
     return cp.sum(cp.hypot(v[0], v[1])*M[part_type])
 
-def KE_distribution(v:cp.ndarray, M:cp.ndarray, bins:int) -> list:
-    E = (v[0]**2 + v[1]**2)*M*0.5
+def KE_distribution(part_type, v:cp.ndarray, M:cp.ndarray, bins:int) -> list:
+    E = (v[0]**2 + v[1]**2)*M[part_type]*0.5
     x = np.arange(bins)*cp.asnumpy(cp.max(E))/bins
     return (x, cp.asnumpy(cp.histogram(E, bins, density=True)[0]))
 

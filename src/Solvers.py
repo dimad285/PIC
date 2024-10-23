@@ -1,5 +1,4 @@
 import cupy as cp
-import numpy as np
 
 def boundary_array(input: tuple, gridsize: tuple) -> cp.ndarray:
     boundary = [[], []]
@@ -8,8 +7,8 @@ def boundary_array(input: tuple, gridsize: tuple) -> cp.ndarray:
         m1, n1, m2, n2 = i[0]
         V = i[1]
         # Compute direction steps using np.sign
-        dm = np.sign(m2 - m1)
-        dn = np.sign(n2 - n1)
+        dm = cp.sign(m2 - m1)
+        dn = cp.sign(n2 - n1)
         
         x, y = m1, n1
         
