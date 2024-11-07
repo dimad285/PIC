@@ -2,8 +2,7 @@ import numpy as np
 import cupy as cp
 
 def update_R(R, V, dt:tuple):
-    i = cp.arange(len(R[0]), dtype=cp.int32)
-    R[:, i] = R[:, i] + V[:, i] * dt
+    R[:] = R[:] + V[:] * dt
 
 def update_V(R, V, E, part_type, q_type, m_type_1, gridsize, dt, X, Y):
     m, n = gridsize
@@ -111,12 +110,8 @@ def update_V_3d(R, V, E, part_type, q_type, m_type_1, gridsize, dt, X, Y, Z):
     V[2] += Ez * q_type[part_type] * m_type_1[part_type] * dt
 
 
-def push_gpu_rk4(R, V, E, part_type, M, gridsize:tuple, dt):
-    pass
-
 def push_gpu_Yoshida(R, V, E, part_type, M, gridsize:tuple, dt):
     pass
-
 
 
 def update_density_gpu(R:cp.ndarray, part_type:cp.ndarray, rho:cp.ndarray, X:float, Y:float, gridsize:tuple, q:cp.ndarray, w = 1):
@@ -229,29 +224,34 @@ def updateE_gpu_3d(E, phi, x, y, z, gridsize: tuple):
     E[1, :] = E_y.flatten(order='C')  # Flatten along the y-direction
     E[2, :] = E_z.flatten(order='C')  # Flatten along the z-direction
 
-def updateE_fft(phi_k, kx, ky):
-    Ex_k = -1j * kx * phi_k
-    Ey_k = -1j * ky * phi_k
-    Ex = cp.fft.ifftn(Ex_k).real
-    Ey = cp.fft.ifftn(Ey_k).real
-    return cp.array([Ex.ravel(), Ey.ravel()])
 
 def kinetic_energy(V, M, part_type):
     return 0.5 * (V[0]**2 + V[1]**2) * M[part_type]
 
-def update_crossection(E):
-    return 1
+def kinetic_energy_ev(V, M, part_type):
+    return 0.5 * (V[0]**2 + V[1]**2) * M[part_type] * 6.242e18
 
-def MCC(R, V, part_type, M, NGD, P, dt):
 
-    E = 0.5 * (V[0]**2 + V[1]**2) * M[part_type]
+def read_cross_section(filename):
+    with open(filename) as f:
+        lines = f.readlines()
+    lines = [line.split() for line in lines]
+    cross = cp.array([[float(line[0]), float(line[1])] for line in lines])
+    return cross.T
+
+def update_cross_section(S, E, crosssection):
+    i = cp.floor(E/crosssection[0, -1]).astype(cp.int32)
+    j = i + 1
+    k = (crosssection[1, j] - crosssection[1, i]) / (crosssection[0, j] - crosssection[0, i])
+    S[:] = k * (E - crosssection[0, i]) + crosssection[1, i]
+
+def MCC(sigma, V, NGD, P, dt):
     v = cp.hypot(V[0], V[1])
-    sigma = update_crossection(E)
     P[:] = 1 - cp.exp(-dt * NGD * sigma * v)
 
 
 
-def compute_probability_distribution(probabilities, num_bins=50):
+def collision_probability_distribution(probabilities, num_bins=50):
     """
     Compute the x (bin edges) and y (counts) arrays for the probability distribution.
 
@@ -310,23 +310,6 @@ def update_history(history:np.ndarray, inp):
     history = np.roll(history, -1)
     history[-1] = inp
     return history
-
-
-def coulumb_collision(rho:cp.ndarray, v:cp.ndarray, gridsize:tuple):
-    pass
-    
-
-def boundary_field_flux(E:cp.ndarray, gridsize:tuple, X:float, Y:float):
-    m, n = gridsize
-    dx = X/(m - 1)
-    dy = Y/(n - 1)
-
-    F = (-cp.sum(cp.hypot(E[0, :], E[1, :]))*dx  # bottom (negative y-direction)
-         + cp.sum(E[1, m*(n-1):])*dx  # top (positive y-direction)
-         - cp.sum(E[0, ::m])*dy  # left (negative x-direction)
-         + cp.sum(E[0, m-1::m])*dy)  # right (positive x-direction)
-
-    return F
 
 def check_gauss_law_2d(E, rho, epsilon_0, dx, dy, nx, ny):
     """

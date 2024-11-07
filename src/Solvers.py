@@ -1,4 +1,6 @@
 import cupy as cp
+from typing import Tuple, Optional
+from enum import Enum
 
 def boundary_array(input: tuple, gridsize: tuple) -> cp.ndarray:
     boundary = [[], []]
@@ -6,7 +8,7 @@ def boundary_array(input: tuple, gridsize: tuple) -> cp.ndarray:
     for i in input:
         m1, n1, m2, n2 = i[0]
         V = i[1]
-        # Compute direction steps using np.sign
+
         dm = cp.sign(m2 - m1)
         dn = cp.sign(n2 - n1)
         
@@ -87,6 +89,25 @@ def setup_fft_solver(m, n):
     
     return k_sq
 
+def solve_poisson_fft(rho, k_sq, epsilon0):
+
+    # Reshape rho to 2D
+    rho_2d = rho.reshape(k_sq.shape)
+    
+    # Compute FFT of charge density
+    rho_k = cp.fft.fftn(rho_2d)
+    
+    # Solve Poisson equation in Fourier space
+    phi_k = rho_k / (k_sq * epsilon0)
+    
+    # Handle k=0 mode (set to average of phi)
+    phi_k[0, 0] = 0
+    
+    # Inverse FFT to get potential
+    phi = cp.fft.ifftn(phi_k).real / (k_sq.shape[0] * k_sq.shape[1])
+    
+    return phi.ravel()  # Return as 1D array
+
 
 def solve_poisson_fft_3d(rho, k_sq, epsilon0):
     # Reshape rho to 3D
@@ -121,24 +142,6 @@ def setup_fft_solver_3d(m, n, p):
    
     return k_sq
 
-def solve_poisson_fft(rho, k_sq, epsilon0):
-
-    # Reshape rho to 2D
-    rho_2d = rho.reshape(k_sq.shape)
-    
-    # Compute FFT of charge density
-    rho_k = cp.fft.fftn(rho_2d)
-    
-    # Solve Poisson equation in Fourier space
-    phi_k = rho_k / (k_sq * epsilon0)
-    
-    # Handle k=0 mode (set to average of phi)
-    phi_k[0, 0] = 0
-    
-    # Inverse FFT to get potential
-    phi = cp.fft.ifftn(phi_k).real / (k_sq.shape[0] * k_sq.shape[1])
-    
-    return phi.ravel()  # Return as 1D array
 
 
 
@@ -269,3 +272,177 @@ def solve_poisson_pcg_gpu(rho, m, n, dx, dy, eps0, tol=1e-5, max_iter=1000):
     b = -rho / eps0
     phi = preconditioned_cg_solver_gpu(A, M_inv, b, tol=tol, max_iter=max_iter)
     return phi
+
+
+
+class BoundaryCondition(Enum):
+    PERIODIC = "periodic"
+    DIRICHLET = "dirichlet"
+    NEUMANN = "neumann"
+
+class PoissonFFTSolver:
+    """
+    A 2D Poisson equation solver using Fast Fourier Transform (FFT) method.
+    Supports periodic, Dirichlet, and Neumann boundary conditions.
+    Solves: ∇²φ = -ρ/ε₀
+    """
+    
+    def __init__(self, m: int, n: int, dx: float = 1.0, dy: float = 1.0, epsilon0: float = 1.0,
+                 boundary_type: BoundaryCondition = BoundaryCondition.PERIODIC):
+        """
+        Initialize the Poisson solver.
+        
+        Args:
+            m: Number of grid points in x direction
+            n: Number of grid points in y direction
+            dx: Grid spacing in x direction
+            dy: Grid spacing in y direction
+            epsilon0: Permittivity constant
+            boundary_type: Type of boundary condition
+        """
+        self.m = m
+        self.n = n
+        self.dx = dx
+        self.dy = dy
+        self.epsilon0 = epsilon0
+        self.boundary_type = boundary_type
+        
+        # Extended grid size for non-periodic boundaries
+        self.m_ext = m if boundary_type == BoundaryCondition.PERIODIC else 2 * m
+        self.n_ext = n if boundary_type == BoundaryCondition.PERIODIC else 2 * n
+        
+        self.k_sq = self._setup_wavenumbers()
+    
+    def _setup_wavenumbers(self) -> cp.ndarray:
+        """Set up the wavenumber arrays based on boundary conditions."""
+        if self.boundary_type == BoundaryCondition.PERIODIC:
+            kx = 2 * cp.pi * cp.fft.fftfreq(self.m, self.dx)
+            ky = 2 * cp.pi * cp.fft.fftfreq(self.n, self.dy)
+        else:
+            # For Dirichlet/Neumann, use sine/cosine transforms frequencies
+            kx = cp.pi * cp.arange(self.m_ext) / (self.m_ext * self.dx)
+            ky = cp.pi * cp.arange(self.n_ext) / (self.n_ext * self.dy)
+            
+        kx_grid, ky_grid = cp.meshgrid(kx, ky, indexing='ij')
+        k_sq = kx_grid**2 + ky_grid**2
+        k_sq[0, 0] = 1.0  # Avoid division by zero
+        return k_sq
+
+    def _apply_dirichlet_bc(self, phi: cp.ndarray, bc_values: dict) -> cp.ndarray:
+        """Apply Dirichlet boundary conditions."""
+        # Extract boundary values
+        top = bc_values.get('top', 0.0)
+        bottom = bc_values.get('bottom', 0.0)
+        left = bc_values.get('left', 0.0)
+        right = bc_values.get('right', 0.0)
+        
+        phi[0, :] = bottom  # Bottom boundary
+        phi[-1, :] = top    # Top boundary
+        phi[:, 0] = left    # Left boundary
+        phi[:, -1] = right  # Right boundary
+        
+        return phi
+
+    def _apply_neumann_bc(self, phi: cp.ndarray, bc_values: dict) -> cp.ndarray:
+        """Apply Neumann boundary conditions using finite differences."""
+        dx, dy = self.dx, self.dy
+        
+        # Extract boundary derivatives
+        dtop = bc_values.get('top', 0.0)
+        dbottom = bc_values.get('bottom', 0.0)
+        dleft = bc_values.get('left', 0.0)
+        dright = bc_values.get('right', 0.0)
+        
+        # Apply Neumann conditions using one-sided differences
+        phi[0, :] = phi[1, :] - dy * dbottom  # Bottom boundary
+        phi[-1, :] = phi[-2, :] + dy * dtop   # Top boundary
+        phi[:, 0] = phi[:, 1] - dx * dleft    # Left boundary
+        phi[:, -1] = phi[:, -2] + dx * dright # Right boundary
+        
+        return phi
+
+    def _extend_domain(self, rho: cp.ndarray) -> cp.ndarray:
+        """Extend the domain for non-periodic boundary conditions."""
+        if self.boundary_type == BoundaryCondition.PERIODIC:
+            return rho
+            
+        rho_ext = cp.zeros((self.m_ext, self.n_ext))
+        rho_ext[:self.m, :self.n] = rho
+        
+        if self.boundary_type == BoundaryCondition.DIRICHLET:
+            # Anti-symmetric extension for Dirichlet
+            rho_ext[self.m:, :self.n] = -cp.flip(rho, axis=0)
+            rho_ext[:, self.n:] = -cp.flip(rho_ext[:, :self.n], axis=1)
+        else:  # Neumann
+            # Symmetric extension for Neumann
+            rho_ext[self.m:, :self.n] = cp.flip(rho, axis=0)
+            rho_ext[:, self.n:] = cp.flip(rho_ext[:, :self.n], axis=1)
+            
+        return rho_ext
+
+    def solve(self, rho: cp.ndarray, bc_values: Optional[dict] = None) -> Tuple[cp.ndarray, float]:
+        """
+        Solve the Poisson equation with specified boundary conditions.
+        
+        Args:
+            rho: Charge density array
+            bc_values: Dictionary of boundary values/derivatives:
+                      For Dirichlet: {'top': val, 'bottom': val, 'left': val, 'right': val}
+                      For Neumann: {'top': dval, 'bottom': dval, 'left': dval, 'right': dval}
+        
+        Returns:
+            Tuple of (potential array, maximum error estimate)
+        """
+        #if isinstance(rho, np.ndarray):
+        #    rho = cp.array(rho)
+        rho_2d = rho.reshape(self.m, self.n)
+        
+        if self.boundary_type != BoundaryCondition.PERIODIC:
+            # Extend domain for non-periodic BCs
+            rho_ext = self._extend_domain(rho_2d)
+            
+            if self.boundary_type == BoundaryCondition.DIRICHLET:
+                # Use DST (Discrete Sine Transform)
+                phi_k = cp.fft.dstn(rho_ext / self.epsilon0, type=1)
+            else:  # Neumann
+                # Use DCT (Discrete Cosine Transform)
+                phi_k = cp.fft.dctn(rho_ext / self.epsilon0, type=1)
+        else:
+            # Standard FFT for periodic BC
+            phi_k = cp.fft.fftn(rho_2d / self.epsilon0)
+        
+        # Solve in frequency domain
+        phi_k = -phi_k / self.k_sq
+        
+        # Transform back to real space
+        if self.boundary_type == BoundaryCondition.DIRICHLET:
+            phi = cp.fft.idstn(phi_k, type=1)[:self.m, :self.n]
+        elif self.boundary_type == BoundaryCondition.NEUMANN:
+            phi = cp.fft.idctn(phi_k, type=1)[:self.m, :self.n]
+        else:
+            phi = cp.fft.ifftn(phi_k).real
+        
+        # Apply boundary conditions
+        if bc_values is not None:
+            if self.boundary_type == BoundaryCondition.DIRICHLET:
+                phi = self._apply_dirichlet_bc(phi, bc_values)
+            elif self.boundary_type == BoundaryCondition.NEUMANN:
+                phi = self._apply_neumann_bc(phi, bc_values)
+        
+        # Compute error estimate
+        residual = self._compute_residual(phi, rho_2d)
+        max_error = cp.max(cp.abs(residual))
+        
+        return phi.ravel(), max_error
+
+    def _compute_residual(self, phi: cp.ndarray, rho: cp.ndarray) -> cp.ndarray:
+        """Compute the residual of the solution."""
+        # Use finite differences for Laplacian to account for BCs
+        dx2, dy2 = self.dx**2, self.dy**2
+        
+        laplacian = (
+            (phi[:-2, 1:-1] - 2*phi[1:-1, 1:-1] + phi[2:, 1:-1]) / dx2 +
+            (phi[1:-1, :-2] - 2*phi[1:-1, 1:-1] + phi[1:-1, 2:]) / dy2
+        )
+        
+        return laplacian + rho[1:-1, 1:-1] / self.epsilon0

@@ -201,3 +201,4 @@ pyrightconfig.json
 src/__pycache__/
 output/
 test/
+src/backup/
