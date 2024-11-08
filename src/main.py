@@ -8,6 +8,7 @@ import src.Consts as Consts
 import tkinter as tk
 from tkinter import ttk
 import random
+import cupyx as cpx
 
 
 
@@ -31,7 +32,9 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
     FINISH = False
     RUN = False
     global selected_render_type
+    global surafce_plot_var_name
     selected_render_type = "particles"  # default render type
+    surafce_plot_var_name = 'phi'
     framecounter = 0
     t = 0
     frame_time = 0
@@ -41,18 +44,30 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
     print('creating arrays...')
     
     if grid_type == '2d' or grid_type == '2d_cylinder':
+
         gridsize = (m, n)
         dx, dy = X / (m-1), Y / (n-1)
-        rho = cp.empty((m*n), dtype=cp.float32)
-        phi = cp.empty((m*n), dtype=cp.float32)
-        E = cp.empty((2, m*n), dtype=cp.float32)
-        R = cp.empty((2, N), dtype=cp.float32)
-        V = cp.empty((2, N), dtype=cp.float32)
+
+        rho = cp.empty((m*n), dtype=cp.float32) # charge density
+        J = cp.empty((2, m*n), dtype=cp.float32) # current density
+
+        phi = cp.empty((m*n), dtype=cp.float32) # scalar potential
+        A = cp.empty((2, m*n), dtype=cp.float32) # vector potential
+
+        B = cp.empty((2, m*n), dtype=cp.float32) # magnetic field
+        E = cp.empty((2, m*n), dtype=cp.float32) # electric field
+
+        R = cp.empty((2, N), dtype=cp.float32) # particle positions
+        V = cp.empty((2, N), dtype=cp.float32) # particle velocities
+
     elif grid_type == '3d':
         gridsize = (m, n, k)
         dx, dy, dz = X / (m-1), Y / (n-1), Z / (k-1)
         rho = cp.empty((m*n*k), dtype=cp.float64)
         phi = cp.empty((m*n*k), dtype=cp.float64)
+        A = cp.empty((3, m*n*k), dtype=cp.float64)
+        B = cp.empty((3, m*n*k), dtype=cp.float64)
+        J = cp.empty((3, m*n*k), dtype=cp.float64)
         E = cp.empty((3, m*n*k), dtype=cp.float64)
         R = cp.random.uniform(X/4, X*3/4, (3, N)).astype(cp.float64)
         V = cp.zeros((3, N), dtype=cp.float64)
@@ -109,6 +124,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
     elif solver == 'cg': # add boundary conditions
         print('Using Conjugate Gradient solver')
 
+
     if UI:
         def toggle_simulation():
             global RUN
@@ -136,7 +152,12 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
             global selected_render_type
             selection = render_listbox.get(render_listbox.curselection())
             selected_render_type = selection
-            print(f"Render type changed to: {selected_render_type}")
+        
+        def update_surface_type(event):
+            global surafce_plot_var_name
+            selection_surface = renderer_listbox_surface.get(renderer_listbox_surface.curselection()[0])
+            surafce_plot_var_name = selection_surface
+
 
         ui = tk.Tk()
         ui.geometry('300x750')
@@ -154,7 +175,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
         textui_button.pack(pady=10)
 
         # Use tk.Listbox for the render type selection
-        render_listbox = tk.Listbox(ui)
+        render_listbox = tk.Listbox(ui, height=8)
         render_listbox.insert(1, "particles")
         if grid_type == '2d':
             render_listbox.insert(2, "heatmap")
@@ -167,9 +188,15 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
         elif grid_type == '3d':
             render_listbox.insert(2, "line_plot")
         render_listbox.pack(pady=10)
-
         # Bind listbox selection to the update_render_type function
         render_listbox.bind('<<ListboxSelect>>', update_render_type)
+
+        renderer_listbox_surface = tk.Listbox(ui, height=3)
+        renderer_listbox_surface.insert(1, "phi")
+        renderer_listbox_surface.insert(2, "rho")
+        renderer_listbox_surface.insert(3, "J_abs")
+        renderer_listbox_surface.pack(pady=10)
+        renderer_listbox_surface.bind('<<ListboxSelect>>', update_surface_type)
 
         # Use ttk.Scale and ttk.Label for the sliders
         fov_label = ttk.Label(ui, text="FOV")
@@ -179,7 +206,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
         fov_slider.pack(pady=10)
 
         camera_distance_label = ttk.Label(ui, text="Camera distance")
-        camera_distance_slider = ttk.Scale(ui, from_=0, to=10, orient='horizontal')
+        camera_distance_slider = ttk.Scale(ui, from_=0.1, to=10, orient='horizontal')
         camera_distance_slider.set(10)  # Set default camera position to 3 units away
         camera_distance_label.pack(pady=5)
         camera_distance_slider.pack(pady=10)
@@ -197,8 +224,8 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
         camera_theta_slider.pack(pady=10)
 
         plot_scale_label = ttk.Label(ui, text="Plot scale")
-        plot_scale_slider = ttk.Scale(ui, from_=0, to=20, orient='horizontal')
-        plot_scale_slider.set(10)  # Set default camera position to 3 units away
+        plot_scale_slider = ttk.Scale(ui, from_=1, to=20, orient='horizontal')
+        plot_scale_slider.set(1)  # Set default camera position to 3 units away
         plot_scale_label.pack(pady=5)
         plot_scale_slider.pack(pady=10)
 
@@ -213,7 +240,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
             #window = surf.initialize_window()
         elif grid_type == '3d':
             #renderer = Render.PICRenderer(*SCREEN_SIZE, fontfile, renderer_type=selected_render_type, is_3d=True)
-            renderer = Render.Simple3DParticleRenderer(width=SCREEN_SIZE[0], height=SCREEN_SIZE[1])
+            renderer = Render.Simple3DParticleRenderer(width=SCREEN_SIZE[0], height=SCREEN_SIZE[1], use_orthographic=True)
         if DIAGNOSTICS:
             renderer = Render.PICRenderer(*SCREEN_SIZE, fontfile, renderer_type="heatmap")
         
@@ -261,11 +288,13 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                 R[:] += V[:] * dt 
 
                 Update.update_density_gpu(R, part_type, rho, X, Y, gridsize, q_type)
+                Update.update_current_density_gpu(R, V, part_type, J, X, Y, gridsize, q_type)
+                J_abs = cp.hypot(*J)
 
                 if boundary != None:
                     rho[bound[0]] = bound[1]
                 if solver == 'inverse':
-                    phi = cp.dot(Lap, rho * Consts.eps0_1 * dx * dy)
+                    phi = cp.dot(Lap, -rho * Consts.eps0_1 * dx * dy)
                 elif solver == 'fft':
                     #phi, error = fft_solver.solve(-rho)
                     phi = Solvers.solve_poisson_fft(rho, k_sq, Consts.eps0)
@@ -282,7 +311,11 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                 Update.MCC(part_cross_section, V, 1e23, mcc_probability, dt)
                 mcc_random[:] = cp.random.random(N)
                 collision = mcc_random < mcc_probability
+                rand_coll_num = cp.random.uniform(0, 1, collision.size)
+                coll_cos = Update.collision_cos(part_energy, rand_coll_num)
+                V[:, collision] = cp.hypot(V[0, collision], V[1, collision]) * coll_cos
                 '''
+                
 
             elif grid_type == '3d':
                 if I < N-1:
@@ -311,7 +344,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
             # RENDER
             framecounter += 1
             if framecounter == RENDER_FRAME and RENDER:
-
+                
                 cam_fov = fov_slider.get()  # Convert FOV to radians
                 cam_r = camera_distance_slider.get()
                 cam_phi = camera_phi_slider.get()
@@ -324,8 +357,8 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                 hystory_x = cp.append(hystory_x, t)
                 hystory_y = cp.append(hystory_y, TE)
                 hystory_y2 = cp.append(hystory_y2, P)
-                phi_min = cp.min(phi)
-                phi_max = cp.max(phi)   
+                
+                renderer.label_list = []
                 
                 if selected_render_type == "particles":
                     renderer.renderer_type = "particles"
@@ -333,9 +366,9 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                         renderer.update_camera(fov=cam_fov, angle_phi=cam_phi, angle_theta=cam_theta, distance=cam_r)
                         R_cpu = (R[:, :I] * 2 - 1).T.get()
                         #part_color_cpu = part_color[part_type[:I]].get()
-                        renderer.setup_particles(R_cpu, part_colors[:I])
+                        renderer.setup_particles(R_cpu)
                     else:
-                        renderer.update_particles_3d(R[:, :I]/X, part_type[:I])
+                        renderer.update_particles(R[:, :I]/X, part_type[:I])
                 elif selected_render_type == "heatmap" and grid_type == '2d':
                     renderer.renderer_type = "heatmap"
                     renderer.update_heatmap(phi, m, n)
@@ -347,6 +380,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                     renderer.update_legend('line_plot_x1', f'{t:.2e}', SCREEN_SIZE[1] - 20, (255, 255, 255), SCREEN_SIZE[0] - 100, 0.5)
                     renderer.update_legend('line_plot_y0', f'{cp.min(hystory_y):.2e}', SCREEN_SIZE[1] - 60, (255, 255, 255))
                     renderer.update_legend('line_plot_y1', f'{cp.max(hystory_y):.2e}', 30, (255, 255, 255))
+                    renderer.label_list.extend(['line_plot_x0', 'line_plot_x1', 'line_plot_y0', 'line_plot_y1'])
                 elif selected_render_type == "line_plot_P":
                     renderer.renderer_type = "line_plot"
                     renderer.line_plot_type = "Momentum"
@@ -355,6 +389,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                     renderer.update_legend('line_plot_x1', f'{t:.2e}', SCREEN_SIZE[1] - 20, (255, 255, 255), SCREEN_SIZE[0] - 100, 0.5)
                     renderer.update_legend('line_plot_y0', f'{cp.min(hystory_y2):.2e}', SCREEN_SIZE[1] - 60, (255, 255, 255))
                     renderer.update_legend('line_plot_y1', f'{cp.max(hystory_y2):.2e}', 30, (255, 255, 255))
+                    renderer.label_list.extend(['line_plot_x0', 'line_plot_x1', 'line_plot_y0', 'line_plot_y1'])
                 elif selected_render_type == "line_plot_MCC":
                     renderer.renderer_type = "line_plot"
                     renderer.line_plot_type = "MCC"
@@ -364,6 +399,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                     renderer.update_legend('line_plot_x1', f'{dist_x[-1]:.2e}', SCREEN_SIZE[1] - 20, (255, 255, 255), SCREEN_SIZE[0] - 100, 0.5)
                     renderer.update_legend('line_plot_y0', f'{cp.min(dist_y):.2e}', SCREEN_SIZE[1] - 60, (255, 255, 255))
                     renderer.update_legend('line_plot_y1', f'{cp.max(dist_y):.2e}', 30, (255, 255, 255))
+                    renderer.label_list.extend(['line_plot_x0', 'line_plot_x1', 'line_plot_y0', 'line_plot_y1'])
                 elif selected_render_type == "line_plot_E_distribution":
                     renderer.renderer_type = "line_plot"
                     renderer.line_plot_type = "E_distribution"
@@ -373,6 +409,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                     renderer.update_legend('line_plot_x1', f'{dist_x[-1]:.2e}', SCREEN_SIZE[1] - 20, (255, 255, 255), SCREEN_SIZE[0] - 100, 0.5)
                     renderer.update_legend('line_plot_y0', f'{cp.min(dist_y):.2e}', SCREEN_SIZE[1] - 60, (255, 255, 255))
                     renderer.update_legend('line_plot_y1', f'{cp.max(dist_y):.2e}', 30, (255, 255, 255))
+                    renderer.label_list.extend(['line_plot_x0', 'line_plot_x1', 'line_plot_y0', 'line_plot_y1'])
                 elif selected_render_type == "line_plot_V_distribution":
                     renderer.renderer_type = "line_plot"
                     renderer.line_plot_type = "V_distribution"
@@ -383,15 +420,22 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                     renderer.update_legend('line_plot_x1', f'{dist_x[-1]:.2e}', SCREEN_SIZE[1] - 20, (255, 255, 255), SCREEN_SIZE[0] - 100, 0.5)
                     renderer.update_legend('line_plot_y0', f'{cp.min(dist_y):.2e}', SCREEN_SIZE[1] - 60, (255, 255, 255))
                     renderer.update_legend('line_plot_y1', f'{cp.max(dist_y):.2e}', 30, (255, 255, 255)) 
+                    renderer.label_list.extend(['line_plot_x0', 'line_plot_x1', 'line_plot_y0', 'line_plot_y1'])
                 elif selected_render_type == "surface_plot":
                     surf_scale = plot_scale_slider.get()
                     renderer.renderer_type = "surface_plot"
                     renderer.set_fov(cam_fov)
                     renderer.set_camera(camera_pos_value)
                     x, y = np.meshgrid(np.linspace(-5, 5, n), np.linspace(-5, 5, m))
-                    phi_max_1 = 1/phi_max
-                    z = cp.asnumpy(cp.reshape(phi*phi_max_1*surf_scale, (m, n)))
+                    #surafce_plot_var_name = 'phi'
+                    surf_max = cp.max(locals()[surafce_plot_var_name])
+                    surf_min = cp.min(locals()[surafce_plot_var_name])
+                    surf_max_1 = 1/surf_max
+                    z = cp.asnumpy(cp.reshape(locals()[surafce_plot_var_name]*surf_max_1*surf_scale, (m, n)))
                     renderer.update_surface(x, y, z)
+                    renderer.update_legend('surface_max', f"phi_max: {surf_max:.2e} V", 210)
+                    renderer.update_legend('surface_min', f"phi_min: {surf_min:.2e} V", 240)
+                    renderer.label_list.extend(['surface_max', 'surface_min'])
                 
                 
                 if TEXTUI and grid_type != '3d':
@@ -403,11 +447,10 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                     renderer.update_legend('sim', f"Sim time: {(sim_time)*1000:.1f} ms", 80)
                     renderer.update_legend('frame', f"Frame time: {(frame_time)*1000:.1f} ms", 110)
                     renderer.update_legend('n', f"N: {I+1}", 140)
+                    renderer.label_list.extend(['sim', 'frame', 'n'])
                     #renderer.update_legend('time', f"Time: {t:.2e} s", 60)
                     #renderer.update_legend('Energy', f"Energy: {TE:.2e} J", 90)
                     #renderer.update_legend('Momentum', f"Momentum: {P:.2e} kg*m/s", 120)
-                    renderer.update_legend('phi_max', f"phi_max: {phi_max:.2e} V", 210)
-                    renderer.update_legend('phi_min', f"phi_min: {phi_min:.2e} V", 240)
                 #else:
                 #    clear_legend_entries(renderer, ['legend_E', 'legend_P', 'fps', 'time', 'Energy', 'Momentum', 'phi_max', 'phi_min'])
                 if grid_type == '3d':
@@ -416,7 +459,8 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                     renderer.render(clear = not TRACE, TEXT_RENDERING=TEXTUI)
 
             frame_time = time.time() - start_time
-
+            if grid_type == '3d':
+                print(f"Frame time: {frame_time*1000:.1f} ms")
             if UI and RENDER:
                 if renderer.should_close():
                     break

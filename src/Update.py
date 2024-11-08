@@ -142,7 +142,49 @@ def update_density_gpu(R:cp.ndarray, part_type:cp.ndarray, rho:cp.ndarray, X:flo
     cp.add.at(rho, k3, charge_density * fx0 * fy1)
     cp.add.at(rho, k4, charge_density * fx1 * fy1)
 
-    #print(f"Max charge density: {cp.max(rho)}, Min: {cp.min(rho)}, Mean: {cp.mean(rho)}")
+def update_current_density_gpu(
+    R: cp.ndarray, V: cp.ndarray, part_type: cp.ndarray, J: cp.ndarray,
+    X: float, Y: float, gridsize: tuple, q: cp.ndarray, w=1
+):
+    m, n = gridsize
+    dx = X / (m - 1)
+    dy = Y / (n - 1)
+    dV_1 = 1 / (dx * dy)
+    J[0].fill(0)
+    J[1].fill(0)
+
+    # Map particle positions to grid indices
+    I = R[0] / X * (m - 1)
+    K = R[1] / Y * (n - 1)
+    i = cp.floor(I).astype(cp.int32)
+    j = cp.floor(K).astype(cp.int32)
+
+    # Interpolation weights
+    fx1 = I - i
+    fy1 = K - j
+    fx0 = 1 - fx1
+    fy0 = 1 - fy1
+
+    # Flattened grid indices
+    k1 = j * n + i
+    k2 = k1 + 1
+    k3 = k1 + n
+    k4 = k3 + 1
+
+    # Compute current density contributions from each particle
+    qv_x = w * q[part_type] * V[0] * dV_1
+    qv_y = w * q[part_type] * V[1] * dV_1
+
+    # Distribute current density to grid nodes with bilinear interpolation
+    cp.add.at(J[0], k1, qv_x * fx0 * fy0)
+    cp.add.at(J[0], k2, qv_x * fx1 * fy0)
+    cp.add.at(J[0], k3, qv_x * fx0 * fy1)
+    cp.add.at(J[0], k4, qv_x * fx1 * fy1)
+
+    cp.add.at(J[1], k1, qv_y * fx0 * fy0)
+    cp.add.at(J[1], k2, qv_y * fx1 * fy0)
+    cp.add.at(J[1], k3, qv_y * fx0 * fy1)
+    cp.add.at(J[1], k4, qv_y * fx1 * fy1)
 
 def update_density_gpu_3d(R: cp.ndarray, part_type: cp.ndarray, rho: cp.ndarray,
                           X: float, Y: float, Z: float, gridsize: tuple, q: cp.ndarray, w = 1) -> None:
@@ -224,6 +266,8 @@ def updateE_gpu_3d(E, phi, x, y, z, gridsize: tuple):
     E[1, :] = E_y.flatten(order='C')  # Flatten along the y-direction
     E[2, :] = E_z.flatten(order='C')  # Flatten along the z-direction
 
+def update_B_gpu(B, A, x, y, gridsize: tuple):
+    pass
 
 def kinetic_energy(V, M, part_type):
     return 0.5 * (V[0]**2 + V[1]**2) * M[part_type]
@@ -249,6 +293,8 @@ def MCC(sigma, V, NGD, P, dt):
     v = cp.hypot(V[0], V[1])
     P[:] = 1 - cp.exp(-dt * NGD * sigma * v)
 
+def collision_cos(energy:cp.ndarray, r:cp.ndarray):
+    return (2 + energy - 2 * cp.power(energy, r)) / energy
 
 
 def collision_probability_distribution(probabilities, num_bins=50):

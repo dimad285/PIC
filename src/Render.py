@@ -249,6 +249,7 @@ class PICRenderer:
         self.is_3d = is_3d
         self.line_plot_type = None
         self.fov = np.radians(60)
+        self.label_list = []
         print(f'Initializing {renderer_type} PIC Renderer...')
         
         if not glfw.init():
@@ -768,7 +769,8 @@ class PICRenderer:
             self.render_surface(self.z_min, self.z_max, self.fov, self.eye)
         # Render all text entries
         if TEXT_RENDERING:
-            for content in self.text_content.values():
+            for label in self.label_list:
+                content = self.text_content[label]
                 self.render_text(content['text'], content['x'], content['y'], content['scale'], content['color'])
 
         glfw.swap_buffers(self.window)
@@ -783,6 +785,9 @@ class PICRenderer:
 
 class Simple3DParticleRenderer:
     def __init__(self, width=800, height=600, use_orthographic=False):
+
+        self.width = width
+        self.height = height
         # Initialize GLFW
         if not glfw.init():
             raise Exception("GLFW can't be initialized")
@@ -808,10 +813,10 @@ class Simple3DParticleRenderer:
         self.distance = 10.0
 
         # Orthographic projection parameters
-        self.left = -10.0
-        self.right = 10.0
-        self.bottom = -10.0
-        self.top = 10.0
+        self.left = -0.5
+        self.right = 0.5
+        self.bottom = -0.5
+        self.top = 0.5
         self.near = 0.1
         self.far = 100.0
 
@@ -864,9 +869,9 @@ class Simple3DParticleRenderer:
 
         # Set up projection matrix (orthographic or perspective)
         if self.use_orthographic:
-            projection = glm.ortho(self.left, self.right, self.bottom, self.top, self.near, self.far)
+            projection = glm.ortho(-self.distance, self.distance, -self.distance, self.distance, self.near, self.far)
         else:
-            projection = glm.perspective(glm.radians(self.fov), 800 / 600, 0.1, 100.0)
+            projection = glm.perspective(glm.radians(self.fov), self.width / self.height, 0.1, 100.0)
         
         # Set up view matrix
         view = glm.lookAt(glm.vec3(self.distance * np.cos(self.angle_phi), 
