@@ -266,8 +266,25 @@ def updateE_gpu_3d(E, phi, x, y, z, gridsize: tuple):
     E[1, :] = E_y.flatten(order='C')  # Flatten along the y-direction
     E[2, :] = E_z.flatten(order='C')  # Flatten along the z-direction
 
-def update_B_gpu(B, A, x, y, gridsize: tuple):
-    pass
+def update_B_gpu(B, A, dx, dy, gridsize: tuple):
+    """
+    Compute the magnetic field component Bz from the vector potential components
+    Ax and Ay on a 2D grid using finite difference approximation.
+
+    Parameters:
+    - Ax, Ay: CuPy arrays representing the vector potential components (2D arrays)
+    - dx, dy: Grid spacing in the x and y directions
+
+    Returns:
+    - Bz: CuPy array representing the magnetic field component Bz
+    """
+    # Compute partial derivatives using finite differences
+    dAy_dx = (cp.roll(A[1], -1, axis=0) - cp.roll(A[1], 1, axis=0)) / (2 * dx)
+    dAx_dy = (cp.roll(A[0], -1, axis=1) - cp.roll(A[0], 1, axis=1)) / (2 * dy)
+    
+    # Compute magnetic field component Bz
+    B[:] = dAy_dx - dAx_dy
+
 
 def kinetic_energy(V, M, part_type):
     return 0.5 * (V[0]**2 + V[1]**2) * M[part_type]

@@ -427,11 +427,17 @@ class PICRenderer:
 
         self.surface_vbo = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self.surface_vbo)
+        
+        self.surface_wireframe_vao = glGenVertexArrays(1)
+        glBindVertexArray(self.surface_wireframe_vao)
+
+        self.surface_wireframe_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.surface_wireframe_vbo)
 
         position_attrib = glGetAttribLocation(self.surface_shader_program, "aPosition")
         glEnableVertexAttribArray(position_attrib)
         glVertexAttribPointer(position_attrib, 3, GL_FLOAT, GL_FALSE, 0, None)
-        
+
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
 
@@ -627,12 +633,35 @@ class PICRenderer:
             vertices = np.vstack([tri1, tri2])
             return vertices.astype(np.float32)
         
+        def generate_wireframe_vertices(X, Y, Z):
+            wireframe_lines = []
+
+            rows, cols = X.shape
+            for i in range(rows - 1):
+                for j in range(cols - 1):
+                    # Horizontal line at top of quad
+                    wireframe_lines.append([X[i, j], Y[i, j], Z[i, j]])
+                    wireframe_lines.append([X[i, j+1], Y[i, j+1], Z[i, j+1]])
+                    
+                    # Vertical line on right of quad
+                    wireframe_lines.append([X[i, j+1], Y[i, j+1], Z[i, j+1]])
+                    wireframe_lines.append([X[i+1, j+1], Y[i+1, j+1], Z[i+1, j+1]])
+
+            return np.array(wireframe_lines, dtype=np.float32)
+        
         vertices = generate_vertices(X, Y, Z)
         self.num_surface_vertices = vertices.shape[0]
         
         # Update OpenGL buffer
         glBindBuffer(GL_ARRAY_BUFFER, self.surface_vbo)
         glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_STATIC_DRAW)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+
+        wireframe_vertices = generate_wireframe_vertices(X, Y, Z)
+        self.num_wireframe_vertices = wireframe_vertices.shape[0]
+
+        glBindBuffer(GL_ARRAY_BUFFER, self.surface_wireframe_vbo)
+        glBufferData(GL_ARRAY_BUFFER, wireframe_vertices.nbytes, wireframe_vertices, GL_STATIC_DRAW)
         glBindBuffer(GL_ARRAY_BUFFER, 0)
 
     def render_particles(self):
@@ -750,6 +779,18 @@ class PICRenderer:
         glDrawArrays(GL_TRIANGLES, 0, self.num_surface_vertices)
         glBindVertexArray(0)
 
+    def render_surface_wireframe(self, color=(1.0, 1.0, 1.0)):
+        glUseProgram(self.surface_shader_program)
+        
+        # Set uniform color for wireframe
+        color_loc = glGetUniformLocation(self.surface_shader_program, "lineColor")
+        glUniform3f(color_loc, *color)
+
+        # Bind and render wireframe VAO
+        glBindVertexArray(self.surface_wireframe_vao)
+        glDrawArrays(GL_LINES, 0, self.num_wireframe_vertices)
+        glBindVertexArray(0)
+
     def render(self, clear=True, TEXT_RENDERING=True):
         if clear:
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
@@ -767,6 +808,7 @@ class PICRenderer:
             self.render_line_plots()
         elif self.renderer_type == "surface_plot":
             self.render_surface(self.z_min, self.z_max, self.fov, self.eye)
+            self.render_surface_wireframe(color=(1.0, 1.0, 1.0))
         # Render all text entries
         if TEXT_RENDERING:
             for label in self.label_list:

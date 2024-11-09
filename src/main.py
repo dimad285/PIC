@@ -39,7 +39,6 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
     t = 0
     frame_time = 0
 
-
     # Grid parameters
     print('creating arrays...')
     
@@ -459,8 +458,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, N = 1000, dt = 0.001, gr
                     renderer.render(clear = not TRACE, TEXT_RENDERING=TEXTUI)
 
             frame_time = time.time() - start_time
-            if grid_type == '3d':
-                print(f"Frame time: {frame_time*1000:.1f} ms")
+
             if UI and RENDER:
                 if renderer.should_close():
                     break
