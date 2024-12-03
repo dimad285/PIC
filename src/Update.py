@@ -1,15 +1,29 @@
 import numpy as np
 import cupy as cp
 
-def update_R(R, V, dt:tuple):
-    R[:] = R[:] + V[:] * dt
+def update_R(R, V, X, Y, dt:float, last_alive, part_type):
+    R[:, :last_alive] = R[:, :last_alive] + V[:, :last_alive] * dt
 
-def update_V(R, V, E, part_type, q_type, m_type_1, gridsize, dt, X, Y):
+    mask = (R[0, :last_alive + 1] < 0) | (R[0, :last_alive + 1] > X) | \
+        (R[1, :last_alive + 1] < 0) | (R[1, :last_alive + 1] > Y)
+    
+    to_remove = cp.where(mask)[0]
+    if to_remove.shape[0] > 0:
+        #print(last_alive)
+        for i in reversed(to_remove):
+            R[:, i] = R[:, last_alive]
+            V[:, i] = V[:, last_alive]
+            part_type[i] = part_type[last_alive]
+            last_alive = last_alive - 1
+        #print(last_alive)
+    return last_alive
+
+def update_V(R, V, E, part_type, q_type, m_type_1, gridsize, dt, dx, dy, last_alive):
     m, n = gridsize
     
     # Normalize particle positions
-    x = R[0] / X * (m - 1)
-    y = R[1] / Y * (n - 1)
+    x = R[0, :last_alive] / dx
+    y = R[1, :last_alive] / dy
     
     # Calculate indices
     x0 = cp.floor(x).astype(cp.int32)
@@ -20,6 +34,8 @@ def update_V(R, V, E, part_type, q_type, m_type_1, gridsize, dt, X, Y):
     # Calculate weights
     wx = x - x0
     wy = y - y0
+    wx_1 = 1 - wx
+    wy_1 = 1 - wy
     
     # Calculate 1D indices for the four surrounding points
     idx00 = y0 * m + x0
@@ -28,19 +44,19 @@ def update_V(R, V, E, part_type, q_type, m_type_1, gridsize, dt, X, Y):
     idx11 = y1 * m + x1
     
     # Perform bilinear interpolation for both components of E
-    Ex = (E[0, idx00] * (1-wx) * (1-wy) +
-          E[0, idx10] * wx * (1-wy) +
-          E[0, idx01] * (1-wx) * wy +
+    Ex = (E[0, idx00] * wx_1 * wy_1 +
+          E[0, idx10] * wx * wy_1 +
+          E[0, idx01] * wx_1 * wy +
           E[0, idx11] * wx * wy)
     
-    Ey = (E[1, idx00] * (1-wx) * (1-wy) +
-          E[1, idx10] * wx * (1-wy) +
-          E[1, idx01] * (1-wx) * wy +
+    Ey = (E[1, idx00] * wx_1 * wy_1 +
+          E[1, idx10] * wx * wy_1 +
+          E[1, idx01] * wx_1 * wy +
           E[1, idx11] * wx * wy)
     
     # Update velocities
-    V[0] += Ex * q_type[part_type] * m_type_1[part_type] * dt 
-    V[1] += Ey * q_type[part_type] * m_type_1[part_type] * dt
+    V[0, :last_alive] += Ex * q_type[part_type[:last_alive]] * m_type_1[part_type[:last_alive]] * dt 
+    V[1, :last_alive] += Ey * q_type[part_type[:last_alive]] * m_type_1[part_type[:last_alive]] * dt
 
 
 def update_V_3d(R, V, E, part_type, q_type, m_type_1, gridsize, dt, X, Y, Z):
@@ -114,15 +130,13 @@ def push_gpu_Yoshida(R, V, E, part_type, M, gridsize:tuple, dt):
     pass
 
 
-def update_density_gpu(R:cp.ndarray, part_type:cp.ndarray, rho:cp.ndarray, X:float, Y:float, gridsize:tuple, q:cp.ndarray, w = 1):
+def update_density_gpu(R:cp.ndarray, part_type:cp.ndarray, rho:cp.ndarray, dx:float, dy:float, gridsize:tuple, q:cp.ndarray, last_alive:int, w = 1):
     m, n = gridsize
-    dx = X/(m-1)
-    dy = Y/(n-1)
     dV_1 = 1/(dx*dy)
-    rho.fill(0)
+    rho.fill(0.0)
 
-    I = (R[0]/X * (m-1))
-    J = (R[1]/Y * (n-1))
+    I = (R[0]/dx)
+    J = (R[1]/dy)
     i = cp.floor(I).astype(cp.int32)
     j = cp.floor(J).astype(cp.int32)
 
@@ -230,7 +244,6 @@ def update_density_gpu_3d(R: cp.ndarray, part_type: cp.ndarray, rho: cp.ndarray,
     cp.add.at(rho, k7, charge_density * fx0 * fy1 * fz1)
     cp.add.at(rho, k8, charge_density * fx1 * fy1 * fz1)
 
-
 def updateE_gpu(E, phi, x, y, gridsize: tuple):
     # Reshape phi into a 2D grid using Fortran-order for better y-direction performance
     phi_grid = cp.reshape(phi, gridsize, order='C')  # Use Fortran-order ('F') for column-major memory layout
@@ -285,13 +298,11 @@ def update_B_gpu(B, A, dx, dy, gridsize: tuple):
     # Compute magnetic field component Bz
     B[:] = dAy_dx - dAx_dy
 
-
 def kinetic_energy(V, M, part_type):
     return 0.5 * (V[0]**2 + V[1]**2) * M[part_type]
 
 def kinetic_energy_ev(V, M, part_type):
     return 0.5 * (V[0]**2 + V[1]**2) * M[part_type] * 6.242e18
-
 
 def read_cross_section(filename):
     with open(filename) as f:
@@ -312,7 +323,6 @@ def MCC(sigma, V, NGD, P, dt):
 
 def collision_cos(energy:cp.ndarray, r:cp.ndarray):
     return (2 + energy - 2 * cp.power(energy, r)) / energy
-
 
 def collision_probability_distribution(probabilities, num_bins=50):
     """
@@ -337,7 +347,6 @@ def collision_probability_distribution(probabilities, num_bins=50):
 
     return bin_centers, hist
 
-
 def total_kinetic_energy(v:cp.ndarray, M_type:cp.ndarray, part_type:cp.ndarray):
     return 0.5*cp.dot((v[0]**2 + v[1]**2), M_type[part_type])
 
@@ -355,7 +364,6 @@ def KE_distribution(part_type, v:cp.ndarray, M:cp.ndarray, bins:int) -> list:
     x = np.arange(bins)*cp.asnumpy(cp.max(E))/bins
     return (x, cp.asnumpy(cp.histogram(E, bins, density=True)[0]))
 
-
 def V_distribution(v:cp.ndarray, bins:int) -> list:
     x = np.arange(bins)
     return (x, cp.asnumpy(cp.histogram(cp.hypot(v[0], v[1]), bins, density=True)[0]))
@@ -367,7 +375,6 @@ def Vx_distribution(v:cp.ndarray, bins:int) -> list:
 def Vy_distribution(v:cp.ndarray, bins:int) -> list:
     x = np.arange(bins)
     return (x, cp.asnumpy(cp.histogram(v[1], bins, density=True)[0]))
-
 
 def update_history(history:np.ndarray, inp):
     history = np.roll(history, -1)

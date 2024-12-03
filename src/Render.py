@@ -296,8 +296,6 @@ class PICRenderer:
 
     def set_camera(self, eye):
         self.eye = eye
-    # Other methods...
-
 
     def init_particle_rendering(self, is_3d=False):
         if is_3d:
@@ -432,7 +430,7 @@ class PICRenderer:
         glBindVertexArray(self.surface_wireframe_vao)
 
         self.surface_wireframe_vbo = glGenBuffers(1)
-        glBindBuffer(GL_ARRAY_BUFFER, self.surface_wireframe_vbo)
+        glBindBuffer(GL_ARRAY_BUFFER, self.surface_wireframe_vbo)        
 
         position_attrib = glGetAttribLocation(self.surface_shader_program, "aPosition")
         glEnableVertexAttribArray(position_attrib)
@@ -441,17 +439,19 @@ class PICRenderer:
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
 
-    def update_particles(self, particle_positions, particle_types):
+
+    def update_particles(self, particle_positions, particle_types, X_max, Y_max, X_min, Y_min):
 
         assert particle_positions.shape[0] == 2, "Position shape should be (2, n)"
         assert particle_positions.shape[1] == particle_types.shape[0], "Number of positions and types should match"
+
             
-        gl_positions = 2.0 * particle_positions - 1.0
+        gl_positions_x = 2.0 * particle_positions[0] - (X_max - X_min)
+        gl_positions_y = 2.0 * particle_positions[1] - (Y_max - Y_min)
+        gl_positions = cp.array([gl_positions_x, gl_positions_y], dtype=cp.float32)
         gl_positions = cp.ascontiguousarray(gl_positions.T).astype(cp.float32)
         
         particle_data = cp.column_stack((gl_positions, particle_types.astype(cp.float32)))
-
-        
         particle_data_cpu = particle_data.get()
         
         glBindBuffer(GL_ARRAY_BUFFER, self.particle_vbo)
@@ -504,7 +504,6 @@ class PICRenderer:
                 'color': (0, 0, 0)  # Optionally set the color to black or leave as is
             })
 
-    
     def update_heatmap(self, data_1d_cupy, rows, cols):
         # Reshape the CuPy 1D data to 2D
         heatmap_data_cupy = data_1d_cupy.reshape((rows, cols))
@@ -597,23 +596,23 @@ class PICRenderer:
         
         def generate_vertices(X, Y, Z):
             assert X.shape == Y.shape == Z.shape, "X, Y, and Z must have the same shape"
-            
+
             # Generate the 4 corners for each quad
             X1 = X[:-1, :-1]  # Bottom-left
             X2 = X[1:, :-1]   # Bottom-right
             X3 = X[:-1, 1:]   # Top-left
             X4 = X[1:, 1:]    # Top-right
-            
+
             Y1 = Y[:-1, :-1]
             Y2 = Y[1:, :-1]
             Y3 = Y[:-1, 1:]
             Y4 = Y[1:, 1:]
-            
+
             Z1 = Z[:-1, :-1]
             Z2 = Z[1:, :-1]
             Z3 = Z[:-1, 1:]
             Z4 = Z[1:, 1:]
-            
+
             # Create triangles with consistent counter-clockwise winding order
             # First triangle: bottom-left -> top-left -> bottom-right (CCW)
             tri1 = np.dstack([
@@ -621,14 +620,14 @@ class PICRenderer:
                 X3, Y3, Z3,  # Top-left
                 X2, Y2, Z2   # Bottom-right
             ]).reshape(-1, 3)
-            
+
             # Second triangle: bottom-right -> top-left -> top-right (CCW)
             tri2 = np.dstack([
                 X2, Y2, Z2,  # Bottom-right
                 X3, Y3, Z3,  # Top-left
                 X4, Y4, Z4   # Top-right
             ]).reshape(-1, 3)
-            
+
             # Combine both triangles
             vertices = np.vstack([tri1, tri2])
             return vertices.astype(np.float32)
@@ -699,29 +698,56 @@ class PICRenderer:
         glBindVertexArray(0)
 
     def render_text(self, text, x, y, scale, color):
+        # Use the text shader program
         glUseProgram(self.text_shader_program)
-        glUniform3f(glGetUniformLocation(self.text_shader_program, "textColor"),
-                    color[0]/255, color[1]/255, color[2]/255)
         
+        # Set text color
+        glUniform3f(glGetUniformLocation(self.text_shader_program, "textColor"),
+                    color[0] / 255, color[1] / 255, color[2] / 255)
+        
+        # Enable blending for transparency
         glActiveTexture(GL_TEXTURE0)
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-
+        
+        # Bind the VAO
         glBindVertexArray(self.text_vao)
+        
+        # Prepare vertex buffer for batch rendering
+        all_vertices = []
         for c in text:
             ch = self.Characters[c]
             w, h = ch.textureSize
-            w = w * scale
-            h = h * scale
-            vertices = _get_rendering_buffer(x, y, w, h)
+            w *= scale
+            h *= scale
 
-            glBindTexture(GL_TEXTURE_2D, ch.texture)
-            glBindBuffer(GL_ARRAY_BUFFER, self.text_vbo)
-            glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.nbytes, vertices)
-            glBindBuffer(GL_ARRAY_BUFFER, 0)
-            glDrawArrays(GL_TRIANGLES, 0, 6)
+            # Compute vertices for this character
+            vertices = _get_rendering_buffer(x, y, w, h)
+            all_vertices.append(vertices)
+
+            # Advance the cursor position for the next character
             x += (ch.advance >> 6) * scale
 
+        # Flatten the vertices into a single array
+        all_vertices = np.vstack(all_vertices).astype(np.float32)
+
+        # Upload all vertices at once
+        glBindBuffer(GL_ARRAY_BUFFER, self.text_vbo)
+        glBufferData(GL_ARRAY_BUFFER, all_vertices.nbytes, all_vertices, GL_DYNAMIC_DRAW)
+
+        # Render each character
+        offset = 0
+        for c in text:
+            ch = self.Characters[c]
+
+            # Bind the character's texture
+            glBindTexture(GL_TEXTURE_2D, ch.texture)
+
+            # Draw the character
+            glDrawArrays(GL_TRIANGLES, offset, 6)
+            offset += 6
+
+        # Cleanup
         glBindVertexArray(0)
         glBindTexture(GL_TEXTURE_2D, 0)
 
@@ -759,9 +785,9 @@ class PICRenderer:
         glUseProgram(self.surface_shader_program)
         
          # Set up face culling
-        glEnable(GL_CULL_FACE)
-        glCullFace(GL_BACK)
-        glFrontFace(GL_CCW)  # Counter-clockwise winding
+        #glEnable(GL_CULL_FACE)
+        #glCullFace(GL_BACK)
+        #glFrontFace(GL_CCW)  # Counter-clockwise winding
 
         # Set up projection, view, and model matrices
         projection = glm.perspective(glm.radians(fov), 800/600, 0.1, 100.0)
@@ -808,7 +834,7 @@ class PICRenderer:
             self.render_line_plots()
         elif self.renderer_type == "surface_plot":
             self.render_surface(self.z_min, self.z_max, self.fov, self.eye)
-            self.render_surface_wireframe(color=(1.0, 1.0, 1.0))
+            self.render_surface_wireframe(color=(0.0, 0.0, 0.0))
         # Render all text entries
         if TEXT_RENDERING:
             for label in self.label_list:

@@ -1,38 +1,45 @@
 import cupy as cp
 from typing import Tuple, Optional
 from enum import Enum
+import cupyx
+import cupyx.scipy.sparse
+import cupyx.scipy.sparse.linalg
 
-def boundary_array(input: tuple, gridsize: tuple) -> cp.ndarray:
-    boundary = [[], []]
+def boundary_array(input: tuple, gridsize: tuple) -> tuple[cp.ndarray, cp.ndarray]:
+    # Initialize Python-native lists for indices and values
+    boundary_indices = []
+    boundary_values = []
     
-    for i in input:
-        m1, n1, m2, n2 = i[0]
-        V = i[1]
-
-        dm = cp.sign(m2 - m1)
-        dn = cp.sign(n2 - n1)
+    for segment in input:
+        (m1, n1, m2, n2), V = segment  # Unpack segment
+        
+        dm = cp.sign(m2 - m1).item()  # Convert to Python scalar
+        dn = cp.sign(n2 - n1).item()  # Convert to Python scalar
         
         x, y = m1, n1
         
         # Iterate over the boundary points
         while True:
-            boundary[0].append(y * gridsize[0] + x)
-            boundary[1].append(V)
+            boundary_indices.append(y * gridsize[0] + x)  # Flattened index
+            boundary_values.append(V)
+            
+            # Break loop if endpoint reached
+            if (x == m2 and y == n2):
+                break
             
             # Update x and y
             x += dm
             y += dn
-            
-            if x == m2 and y == n2:
-                boundary[0].append(y * gridsize[0] + x)
-                boundary[1].append(V)
-                break
     
-    return cp.asarray(boundary, dtype=cp.int32)
+    # Convert Python-native lists to CuPy arrays
+    indices = cp.array(boundary_indices, dtype=cp.int32)
+    values = cp.array(boundary_values, dtype=cp.float32)
+    
+    return indices, values
 
 
 def boundary_conditions_left_gpu(A:cp.ndarray, boundary:cp.ndarray):
-    for i in boundary[0]:
+    for i in boundary:
         A[i,:] = 0
         A[i, i] = 1
 
@@ -75,10 +82,10 @@ def Laplacian_cilindrical(m, n) -> cp.ndarray:
     return Lap.astype(cp.float32)
 
 
-def setup_fft_solver(m, n):
+def setup_fft_solver(m, n, dx, dy):
     # Create wavenumber arrays
-    kx = 2 * cp.pi * cp.fft.fftfreq(m)
-    ky = 2 * cp.pi * cp.fft.fftfreq(n)
+    kx = 2 * cp.pi * cp.fft.fftfreq(m, dx)
+    ky = 2 * cp.pi * cp.fft.fftfreq(n, dy)
     
     # Create 2D wavenumber grid
     kx_grid, ky_grid = cp.meshgrid(kx, ky)
@@ -104,9 +111,10 @@ def solve_poisson_fft(rho, k_sq, epsilon0):
     phi_k[0, 0] = 0
     
     # Inverse FFT to get potential
-    phi = cp.fft.ifftn(phi_k).real / (k_sq.shape[0] * k_sq.shape[1])
+    phi = cp.fft.ifftn(phi_k).real
     
     return phi.ravel()  # Return as 1D array
+
 
 
 def solve_poisson_fft_3d(rho, k_sq, epsilon0):
@@ -123,7 +131,7 @@ def solve_poisson_fft_3d(rho, k_sq, epsilon0):
     phi_k[0, 0, 0] = 0
    
     # Inverse FFT to get potential
-    phi = cp.fft.ifftn(phi_k).real / (k_sq.shape[0] * k_sq.shape[1] * k_sq.shape[2])
+    phi = cp.fft.ifftn(phi_k).real
    
     return phi.ravel()  # Return as 1D array
 
@@ -142,8 +150,126 @@ def setup_fft_solver_3d(m, n, p):
    
     return k_sq
 
+def restrict_grid(fine_grid, coarse_grid):
+    """
+    Restrict a 2D fine grid to a coarser grid using full weighting on GPU.
+    Updates the `coarse_grid` in place.
+    
+    Parameters:
+    - fine_grid (cupy.ndarray): 2D array of the fine grid values (on GPU).
+    - coarse_grid (cupy.ndarray): 2D array of the coarser grid values (on GPU, updated in place).
+    """
+    fine_nx, fine_ny = fine_grid.shape
+    coarse_nx, coarse_ny = coarse_grid.shape
+    
+    # Ensure grid sizes are compatible
+    if fine_nx != 2 * coarse_nx - 1 or fine_ny != 2 * coarse_ny - 1:
+        raise ValueError("Fine grid dimensions must be compatible with coarse grid dimensions.")
+    
+    # Restriction using full weighting
+    # Fine grid center points
+    coarse_grid[1:-1, 1:-1] = (
+        fine_grid[2:-2:2, 2:-2:2] +  # Center points
+        0.5 * (fine_grid[1:-3:2, 2:-2:2] + fine_grid[3::2, 2:-2:2] +  # Vertical neighbors
+               fine_grid[2:-2:2, 1:-3:2] + fine_grid[2:-2:2, 3::2]) +  # Horizontal neighbors
+        0.25 * (fine_grid[1:-3:2, 1:-3:2] + fine_grid[1:-3:2, 3::2] +  # Diagonal neighbors
+                fine_grid[3::2, 1:-3:2] + fine_grid[3::2, 3::2])
+    )
+    
+    # Boundary values (copy from fine grid)
+    coarse_grid[0, :] = fine_grid[0, ::2]
+    coarse_grid[-1, :] = fine_grid[-1, ::2]
+    coarse_grid[:, 0] = fine_grid[::2, 0]
+    coarse_grid[:, -1] = fine_grid[::2, -1]
 
 
+def interpolate_grid(coarse_grid, fine_grid):
+    """
+    Interpolates a 2D coarse grid to a fine grid using bilinear interpolation on GPU.
+    Updates the `fine_grid` in place.
+    
+    Parameters:
+    - coarse_grid (cupy.ndarray): 2D array of the coarse grid values (on GPU).
+    - fine_grid (cupy.ndarray): 2D array of the fine grid values (on GPU, updated in place).
+    """
+    coarse_nx, coarse_ny = coarse_grid.shape
+    fine_nx, fine_ny = fine_grid.shape
+
+    # Ensure grid sizes are compatible
+    if fine_nx != 2 * coarse_nx - 1 or fine_ny != 2 * coarse_ny - 1:
+        raise ValueError("Fine grid dimensions must be compatible with coarse grid dimensions.")
+    
+    # Copy coarse grid values to corresponding fine grid points
+    fine_grid[::2, ::2] = coarse_grid
+    
+    # Interpolate along rows (horizontal edges)
+    fine_grid[1::2, ::2] = 0.5 * (fine_grid[:-1:2, ::2] + fine_grid[2::2, ::2])
+    
+    # Interpolate along columns (vertical edges)
+    fine_grid[::2, 1::2] = 0.5 * (fine_grid[::2, :-1:2] + fine_grid[::2, 2::2])
+    
+    # Interpolate interior points (center of 2x2 coarse cells)
+    fine_grid[1::2, 1::2] = 0.25 * (
+        fine_grid[:-1:2, :-1:2] + fine_grid[2::2, :-1:2] +  # Top-left and bottom-left
+        fine_grid[:-1:2, 2::2] + fine_grid[2::2, 2::2]      # Top-right and bottom-right
+    )
+
+
+
+def cg_solver_gpu(A, b, x0=None, tol=1e-5, max_iter=1000, verbose=False):
+    """
+    Conjugate Gradient solver for Ax = b without preconditioning.
+    
+    Args:
+    A: function that performs the matrix-vector product (A @ x)
+    b: right-hand side vector (1D CuPy array)
+    x0: initial guess (1D CuPy array, optional; if None, starts with zeros)
+    tol: relative tolerance for convergence
+    max_iter: maximum number of iterations
+    verbose: if True, prints convergence information
+    
+    Returns:
+    x: solution vector (1D CuPy array)
+    """
+    x = x0 if x0 is not None else cp.zeros_like(b)
+    r = b - A(x)
+    b_norm = cp.linalg.norm(b)
+    if b_norm == 0:
+        b_norm = 1  # Prevent division by zero if b is zero
+    r_norm = cp.linalg.norm(r)
+    
+    if r_norm / b_norm < tol:
+        if verbose:
+            print("CG converged at iteration 0")
+        return x
+    
+    p = r.copy()
+    rs_old = cp.dot(r, r)
+
+    for i in range(max_iter):
+        Ap = A(p)
+        alpha = rs_old / cp.dot(p, Ap)
+        
+        x += alpha * p
+        r -= alpha * Ap
+        
+        r_norm = cp.linalg.norm(r)
+        relative_residual = r_norm / b_norm
+        if relative_residual < tol:
+            if verbose:
+                print(f"CG converged in {i+1} iterations, Relative Residual: {relative_residual:.2e}")
+            return x
+        
+        rs_new = cp.dot(r, r)
+        beta = rs_new / rs_old
+        rs_old = rs_new
+        
+        p = r + beta * p
+        
+        if verbose and i % 10 == 0:
+            print(f"Iteration {i}, Relative Residual: {relative_residual:.2e}")
+    
+    #raise RuntimeError("CG did not converge within the maximum number of iterations.")
 
 def preconditioned_cg_solver_gpu(A, M_inv, b, x0=None, tol=1e-5, max_iter=1000):
     """
@@ -165,6 +291,9 @@ def preconditioned_cg_solver_gpu(A, M_inv, b, x0=None, tol=1e-5, max_iter=1000):
     z = M_inv(r)
     p = z.copy()
     rz = cp.dot(r, z)
+    b_norm = cp.linalg.norm(b)
+    if b_norm == 0:
+        b_norm = 1  # Prevent division by zero if b is all zeros
     
     for i in range(max_iter):
         Ap = A(p)
@@ -173,7 +302,9 @@ def preconditioned_cg_solver_gpu(A, M_inv, b, x0=None, tol=1e-5, max_iter=1000):
         x += alpha * p
         r -= alpha * Ap
         
-        if cp.linalg.norm(r) < tol:
+        r_norm = cp.linalg.norm(r)
+        relative_residual = r_norm / b_norm
+        if relative_residual < tol:
             #print(f"PCG converged in {i+1} iterations")
             return x
         
@@ -198,31 +329,50 @@ def setup_poisson_operator_gpu(m, n, dx, dy):
     Returns:
     A: function that applies the Poisson operator
     """
-    idx2, idy2 = 1/dx**2, 1/dy**2
-    
+    idx2, idy2 = 1 / dx**2, 1 / dy**2
+    inv_diag = -2 * (idx2 + idy2)  # Precompute the diagonal term
+
     poisson_kernel = cp.ElementwiseKernel(
-        'raw T x, int32 m, int32 n, float64 idx2, float64 idy2',
+        'raw T x, int32 m, int32 n, float64 idx2, float64 idy2, float64 inv_diag',
         'T y',
         '''
-        int row = i % m;
-        int col = i / m;
+        int row = i / n;
+        int col = i % n;
+
         if (row > 0 && row < m-1 && col > 0 && col < n-1) {
-            y = (-2 * (idx2 + idy2) * x[i] +
-                 idx2 * (x[i+1] + x[i-1]) +
-                 idy2 * (x[i+m] + x[i-m]));
+            y = inv_diag * x[i] +
+                idx2 * (x[i + 1] + x[i - 1]) +
+                idy2 * (x[i + n] + x[i - n]);
         } else {
-            y = x[i];  // Dirichlet boundary condition
+            y = x[i];  // Dirichlet boundary condition (copy boundary values)
         }
         ''',
         'poisson_kernel'
     )
-    
+
     def A(x):
+        """
+        Applies the Poisson operator to the input vector `x`.
+
+        Args:
+        x: Input vector representing the grid values (1D CuPy array of size m*n).
+
+        Returns:
+        y: Result of applying the Poisson operator (1D CuPy array of size m*n).
+        """
         y = cp.empty_like(x)
-        poisson_kernel(x, m, n, idx2, idy2, y)
+        poisson_kernel(x, m, n, idx2, idy2, inv_diag, y)
         return y
-    
+
     return A
+
+
+
+def setup_ilu_preconditioner_gpu(A_sparse):
+    M = cupyx.scipy.sparse.linalg.spilu(A_sparse)  # ILU factorization
+    def M_inv(r):
+        return M.solve(r)
+    return M_inv
 
 def setup_jacobi_preconditioner_gpu(m, n, dx, dy):
     """
@@ -252,7 +402,7 @@ def setup_jacobi_preconditioner_gpu(m, n, dx, dy):
     
     return M_inv
 
-def solve_poisson_pcg_gpu(rho, m, n, dx, dy, eps0, tol=1e-5, max_iter=1000):
+def solve_poisson_pcg_gpu(rho, m, n, dx, dy, eps0, phi0=None, tol=1e-5, max_iter=1000, preconditioner="jacobi"):
     """
     Solve the Poisson equation using the Preconditioned Conjugate Gradient method.
     
@@ -268,19 +418,20 @@ def solve_poisson_pcg_gpu(rho, m, n, dx, dy, eps0, tol=1e-5, max_iter=1000):
     phi: electrostatic potential (1D CuPy array)
     """
     A = setup_poisson_operator_gpu(m, n, dx, dy)
-    M_inv = setup_jacobi_preconditioner_gpu(m, n, dx, dy)
     b = -rho / eps0
-    phi = preconditioned_cg_solver_gpu(A, M_inv, b, tol=tol, max_iter=max_iter)
+    if preconditioner == "jacobi":
+        M_inv = setup_jacobi_preconditioner_gpu(m, n, dx, dy)
+        phi = preconditioned_cg_solver_gpu(A, M_inv, b, x0=phi0, tol=tol, max_iter=max_iter)
+    elif preconditioner == "ilu":
+        M_inv = setup_ilu_preconditioner_gpu(A)
+        phi = preconditioned_cg_solver_gpu(A, M_inv, b, x0=phi0, tol=tol, max_iter=max_iter)
+    elif preconditioner == "none":
+        phi = cg_solver_gpu(A, b, x0=phi0, tol=tol, max_iter=max_iter)
     return phi
 
 
 
-class BoundaryCondition(Enum):
-    PERIODIC = "periodic"
-    DIRICHLET = "dirichlet"
-    NEUMANN = "neumann"
 
-class PoissonFFTSolver:
     """
     A 2D Poisson equation solver using Fast Fourier Transform (FFT) method.
     Supports periodic, Dirichlet, and Neumann boundary conditions.
