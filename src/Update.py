@@ -1,27 +1,48 @@
 import numpy as np
 import cupy as cp
+#from numba import cuda, float32, int32
 
 def update_R(R, V, X, Y, dt:float, last_alive, part_type):
     R[:, :last_alive] = R[:, :last_alive] + V[:, :last_alive] * dt
 
-    mask = (R[0, :last_alive + 1] < 0) | (R[0, :last_alive + 1] > X) | \
-        (R[1, :last_alive + 1] < 0) | (R[1, :last_alive + 1] > Y)
-    
+    '''
+    mask = (R[0, :last_alive] < 0) | (R[0, :last_alive] > X) | \
+           (R[1, :last_alive] < 0) | (R[1, :last_alive] > Y)
     to_remove = cp.where(mask)[0]
-    if to_remove.shape[0] > 0:
-        #print(last_alive)
-        for i in reversed(to_remove):
-            R[:, i] = R[:, last_alive]
-            V[:, i] = V[:, last_alive]
-            part_type[i] = part_type[last_alive]
-            last_alive = last_alive - 1
-        #print(last_alive)
-    return last_alive
 
-def update_V(R, V, E, part_type, q_type, m_type_1, gridsize, dt, dx, dy, last_alive):
+    # Remove particles flagged by the mask
+    num_to_remove = to_remove.shape[0]
+    if num_to_remove > 0:
+        keep_indices = cp.arange(last_alive)  # Indices of all alive particles
+        keep_indices[to_remove] = keep_indices[last_alive - num_to_remove:last_alive]
+        
+        # Rearrange R, V, and part_type
+        R[:, :last_alive - num_to_remove] = R[:, keep_indices[:last_alive - num_to_remove]]
+        V[:, :last_alive - num_to_remove] = V[:, keep_indices[:last_alive - num_to_remove]]
+        part_type[:last_alive - num_to_remove] = part_type[keep_indices[:last_alive - num_to_remove]]
+
+        last_alive -= num_to_remove
+
+    return last_alive
+    '''
+
+def compute_bilinear_weights(R: cp.ndarray, dx: float, dy: float,
+                             gridsize: tuple, last_alive: int, weights: cp.ndarray, indices: cp.ndarray,
+                             R_grid: cp.ndarray = None):
+    """
+    Computes bilinear interpolation weights and cell indices for particles in place.
+    
+    Args:
+        R: Particle positions array (2 x N)
+        dx, dy: Grid spacing
+        gridsize: Grid dimensions (m, n)
+        last_alive: Number of active particles
+        weights: Array to store interpolation weights for each particle (4 x last_alive)
+        indices: Array to store cell indices for each particle (4 x last_alive)
+    """
     m, n = gridsize
     
-    # Normalize particle positions
+    # Normalize positions
     x = R[0, :last_alive] / dx
     y = R[1, :last_alive] / dy
     
@@ -30,34 +51,46 @@ def update_V(R, V, E, part_type, q_type, m_type_1, gridsize, dt, dx, dy, last_al
     y0 = cp.floor(y).astype(cp.int32)
     x1 = cp.minimum(x0 + 1, m - 1)
     y1 = cp.minimum(y0 + 1, n - 1)
-    
+
     # Calculate weights
     wx = x - x0
     wy = y - y0
-    wx_1 = 1 - wx
-    wy_1 = 1 - wy
+    wx_1 = 1.0 - wx
+    wy_1 = 1.0 - wy
     
-    # Calculate 1D indices for the four surrounding points
-    idx00 = y0 * m + x0
-    idx10 = y0 * m + x1
-    idx01 = y1 * m + x0
-    idx11 = y1 * m + x1
+    # Update weights in place
+    weights[0, :last_alive] = wx_1 * wy_1  # bottom-left
+    weights[1, :last_alive] = wx * wy_1    # bottom-right
+    weights[2, :last_alive] = wx_1 * wy    # top-left
+    weights[3, :last_alive] = wx * wy      # top-right
     
-    # Perform bilinear interpolation for both components of E
-    Ex = (E[0, idx00] * wx_1 * wy_1 +
-          E[0, idx10] * wx * wy_1 +
-          E[0, idx01] * wx_1 * wy +
-          E[0, idx11] * wx * wy)
+    # Update indices in place
+    indices[0, :last_alive] = y0 * n + x0  # bottom-left
+    indices[1, :last_alive] = y0 * n + x1  # bottom-right
+    indices[2, :last_alive] = y1 * n + x0  # top-left
+    indices[3, :last_alive] = y1 * n + x1  # top-right
+
+    if R_grid is not None:
+        R_grid[:last_alive] = indices[0, :last_alive] - indices[0, :last_alive]//m
+
+def update_V(V: cp.ndarray, E: cp.ndarray,
+             part_type: cp.ndarray, q_type: cp.ndarray, m_type_1: cp.ndarray,
+             dt: float,
+             last_alive: int, weights: cp.ndarray, indices: cp.ndarray):
+    """
+    Updates particle velocities using precomputed interpolation weights.
+    """
+    # Get interpolation weights and indices
+    #weights, indices = compute_bilinear_weights(R, dx, dy, gridsize, last_alive)
     
-    Ey = (E[1, idx00] * wx_1 * wy_1 +
-          E[1, idx10] * wx * wy_1 +
-          E[1, idx01] * wx_1 * wy +
-          E[1, idx11] * wx * wy)
+    # Compute interpolated electric field components
+    Ex = cp.sum(E[0, indices[:, :last_alive]] * weights[:, :last_alive], axis=0)
+    Ey = cp.sum(E[1, indices[:, :last_alive]] * weights[:, :last_alive], axis=0)
     
     # Update velocities
-    V[0, :last_alive] += Ex * q_type[part_type[:last_alive]] * m_type_1[part_type[:last_alive]] * dt 
-    V[1, :last_alive] += Ey * q_type[part_type[:last_alive]] * m_type_1[part_type[:last_alive]] * dt
-
+    k = dt * q_type[part_type[:last_alive]] * m_type_1[part_type[:last_alive]]
+    V[0, :last_alive] += Ex * k
+    V[1, :last_alive] += Ey * k
 
 def update_V_3d(R, V, E, part_type, q_type, m_type_1, gridsize, dt, X, Y, Z):
     m, n, p = gridsize
@@ -125,36 +158,27 @@ def update_V_3d(R, V, E, part_type, q_type, m_type_1, gridsize, dt, X, Y, Z):
     V[1] += Ey * q_type[part_type] * m_type_1[part_type] * dt
     V[2] += Ez * q_type[part_type] * m_type_1[part_type] * dt
 
-
-def push_gpu_Yoshida(R, V, E, part_type, M, gridsize:tuple, dt):
-    pass
-
-
-def update_density_gpu(R:cp.ndarray, part_type:cp.ndarray, rho:cp.ndarray, dx:float, dy:float, gridsize:tuple, q:cp.ndarray, last_alive:int, w = 1):
-    m, n = gridsize
-    dV_1 = 1/(dx*dy)
+def update_density_gpu(part_type: cp.ndarray, rho: cp.ndarray,
+                       q: cp.ndarray,
+                       last_alive: int, weights: cp.ndarray, indices: cp.ndarray, w: float = 1.0):
+    """
+    Updates charge density field using precomputed bilinear interpolation.
+    """
     rho.fill(0.0)
+    
+    # Get interpolation weights and indices
+    #weights, indices = compute_bilinear_weights(R, dx, dy, gridsize, last_alive)
+    
+    # Compute charge density contributions
+    
+    # Apply charge density to grid using weights
+    #for idx, weight in zip(indices[:last_alive], weights[:last_alive]):
+    #    cp.add.at(rho, idx, w * q[part_type[:last_alive]] * weight)
 
-    I = (R[0]/dx)
-    J = (R[1]/dy)
-    i = cp.floor(I).astype(cp.int32)
-    j = cp.floor(J).astype(cp.int32)
-
-    fx1 = I - i
-    fy1 = J - j
-    fx0 = 1 - fx1
-    fy0 = 1 - fy1
-
-    k1 = j*n + i
-    k2 = k1 + 1
-    k3 = k1 + n
-    k4 = k3 + 1
-
-    charge_density = w * q[part_type] * dV_1
-    cp.add.at(rho, k1, charge_density * fx0 * fy0)
-    cp.add.at(rho, k2, charge_density * fx1 * fy0)
-    cp.add.at(rho, k3, charge_density * fx0 * fy1)
-    cp.add.at(rho, k4, charge_density * fx1 * fy1)
+    cp.add.at(rho, indices[0, :last_alive], w * q[part_type[:last_alive]] * weights[0, :last_alive])
+    cp.add.at(rho, indices[1, :last_alive], w * q[part_type[:last_alive]] * weights[1, :last_alive])
+    cp.add.at(rho, indices[2, :last_alive], w * q[part_type[:last_alive]] * weights[2, :last_alive])
+    cp.add.at(rho, indices[3, :last_alive], w * q[part_type[:last_alive]] * weights[3, :last_alive])
 
 def update_current_density_gpu(
     R: cp.ndarray, V: cp.ndarray, part_type: cp.ndarray, J: cp.ndarray,
@@ -259,6 +283,140 @@ def updateE_gpu(E, phi, x, y, gridsize: tuple):
     # Flatten the results and assign to E
     E[0, :] = E_x.flatten()  # Flatten using the same Fortran-order to match the reshaping
     E[1, :] = E_y.flatten()
+    
+def sort_particles_sparse(cell_indices, num_cells):
+    """
+    Sort particles using a sparse array approach on GPU.
+    Only stores data for non-empty cells.
+    
+    Parameters:
+    -----------
+    cell_indices : cupy.ndarray
+        Array of cell indices for each particle
+    num_cells : int
+        Total number of cells
+        
+    Returns:
+    --------
+    active_cells : cupy.ndarray
+        Indices of cells that contain particles
+    cell_counts : cupy.ndarray
+        Number of particles in each active cell
+    sorted_indices : cupy.ndarray
+        Sorted particle indices
+    """
+    # Get counts for all cells
+    full_counts = cp.bincount(cell_indices, minlength=num_cells)
+    
+    # Find non-empty cells
+    active_cells = cp.nonzero(full_counts)[0]
+    cell_counts = full_counts[active_cells]
+    
+    # Create array for sorted particle indices
+    sorted_indices = cp.zeros_like(cell_indices)
+    
+    # Initialize current positions for active cells
+    positions = cp.zeros_like(active_cells)
+    cp.cumsum(cell_counts[:-1], out=positions[1:])
+    
+    # Create a kernel for parallel particle sorting
+    sort_kernel = cp.RawKernel(r'''
+    extern "C" __global__
+    void sort_particles_sparse(const int* cell_indices,
+                             const int* active_cells,
+                             const int* positions,
+                             int* sorted_indices,
+                             const int num_particles,
+                             const int num_active_cells) {
+        int idx = blockDim.x * blockIdx.x + threadIdx.x;
+        if (idx < num_particles) {
+            int cell = cell_indices[idx];
+            // Binary search to find position in active_cells
+            int left = 0;
+            int right = num_active_cells - 1;
+            
+            while (left <= right) {
+                int mid = (left + right) / 2;
+                if (active_cells[mid] == cell) {
+                    int pos = positions[mid] + atomicAdd(
+                        (int*)&positions[mid], 1);
+                    sorted_indices[pos] = idx;
+                    break;
+                }
+                else if (active_cells[mid] < cell) {
+                    left = mid + 1;
+                }
+                else {
+                    right = mid - 1;
+                }
+            }
+        }
+    }
+    ''', 'sort_particles_sparse')
+    
+    # Launch kernel
+    threads_per_block = 256
+    blocks_per_grid = (len(cell_indices) + threads_per_block - 1) // threads_per_block
+    sort_kernel((blocks_per_grid,), (threads_per_block,),
+                (cell_indices, active_cells, positions, sorted_indices, 
+                 len(cell_indices), len(active_cells)))
+    
+    return active_cells, cell_counts, sorted_indices
+
+def get_particles_in_cell(cell_id, active_cells, cell_counts, sorted_indices):
+    """
+    Get particles in a specific cell using sparse storage.
+    
+    Parameters:
+    -----------
+    cell_id : int
+        Cell to get particles from
+    active_cells : cupy.ndarray
+        Array of cell indices that contain particles
+    cell_counts : cupy.ndarray
+        Number of particles in each active cell
+    sorted_indices : cupy.ndarray
+        Sorted particle indices
+    
+    Returns:
+    --------
+    cupy.ndarray or None
+        Particle indices in the requested cell, or None if cell is empty
+    """
+    # Binary search for cell_id in active_cells
+    idx = cp.searchsorted(active_cells, cell_id)
+    if idx < len(active_cells) and active_cells[idx] == cell_id:
+        start = cp.sum(cell_counts[:idx]) if idx > 0 else 0
+        return sorted_indices[start:start + cell_counts[idx]]
+    return None
+
+def sort_particles_dict(cell_indices):
+    """
+    Sort particles using dictionary method, with GPU-friendly implementation.
+    Better for sparse distributions.
+    
+    Parameters:
+    -----------
+    cell_indices : cupy.ndarray
+        Array of cell indices for each particle
+        
+    Returns:
+    --------
+    unique_cells : cupy.ndarray
+        Array of unique cell indices
+    cell_starts : cupy.ndarray
+        Starting index for each cell
+    sorted_indices : cupy.ndarray
+        Sorted particle indices
+    """
+    # Sort particles by cell index
+    sorted_order = cp.argsort(cell_indices)
+    sorted_cells = cell_indices[sorted_order]
+    
+    # Find unique cells and their starting positions
+    unique_cells, cell_starts = cp.unique(sorted_cells, return_index=True)
+    
+    return unique_cells, cell_starts, sorted_order
 
 def updateE_gpu_3d(E, phi, x, y, z, gridsize: tuple):
     # Reshape phi into a 3D grid (Fortran-order for better performance in the z-direction)
@@ -304,51 +462,9 @@ def kinetic_energy(V, M, part_type):
 def kinetic_energy_ev(V, M, part_type):
     return 0.5 * (V[0]**2 + V[1]**2) * M[part_type] * 6.242e18
 
-def read_cross_section(filename):
-    with open(filename) as f:
-        lines = f.readlines()
-    lines = [line.split() for line in lines]
-    cross = cp.array([[float(line[0]), float(line[1])] for line in lines])
-    return cross.T
-
-def update_cross_section(S, E, crosssection):
-    i = cp.floor(E/crosssection[0, -1]).astype(cp.int32)
-    j = i + 1
-    k = (crosssection[1, j] - crosssection[1, i]) / (crosssection[0, j] - crosssection[0, i])
-    S[:] = k * (E - crosssection[0, i]) + crosssection[1, i]
-
-def MCC(sigma, V, NGD, P, dt):
-    v = cp.hypot(V[0], V[1])
-    P[:] = 1 - cp.exp(-dt * NGD * sigma * v)
-
-def collision_cos(energy:cp.ndarray, r:cp.ndarray):
-    return (2 + energy - 2 * cp.power(energy, r)) / energy
-
-def collision_probability_distribution(probabilities, num_bins=50):
-    """
-    Compute the x (bin edges) and y (counts) arrays for the probability distribution.
-
-    Parameters:
-    probabilities (cupy.ndarray): Array of precomputed collision probabilities.
-    num_bins (int): Number of bins for the histogram.
-
-    Returns:
-    bin_centers (numpy.ndarray): The centers of the histogram bins (x values).
-    hist (numpy.ndarray): The histogram counts (y values).
-    """
-    # Convert CuPy array to NumPy for histogram computation
-    probabilities_np = cp.asnumpy(probabilities)
-
-    # Compute histogram
-    hist, bin_edges = np.histogram(probabilities_np, bins=num_bins, density=True)
-
-    # Compute bin centers from bin edges
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-
-    return bin_centers, hist
-
-def total_kinetic_energy(v:cp.ndarray, M_type:cp.ndarray, part_type:cp.ndarray):
-    return 0.5*cp.dot((v[0]**2 + v[1]**2), M_type[part_type])
+def total_kinetic_energy(v:cp.ndarray, M_type:cp.ndarray, part_type:cp.ndarray, last_alive:int) -> float:
+    # Compute kinetic energy element-wise and sum
+    return 0.5 * cp.sum((v[0, :last_alive] ** 2 + v[1, :last_alive] ** 2) * M_type[part_type[:last_alive]])
 
 def total_potential_energy(rho: cp.ndarray, phi: cp.ndarray, dx: float, dy: float) -> float:
     dV = dx * dy
@@ -356,8 +472,8 @@ def total_potential_energy(rho: cp.ndarray, phi: cp.ndarray, dx: float, dy: floa
     total_potential_energy = cp.sum(energy_density) * dV
     return total_potential_energy
 
-def total_momentum(v:cp.ndarray, M:cp.ndarray, part_type:cp.ndarray):
-    return cp.sum(cp.hypot(v[0], v[1])*M[part_type])
+def total_momentum(v:cp.ndarray, M:cp.ndarray, part_type:cp.ndarray, last_alive:int):
+    return cp.sum(cp.hypot(v[0, :last_alive], v[1, :last_alive])*M[part_type[:last_alive]])
 
 def KE_distribution(part_type, v:cp.ndarray, M:cp.ndarray, bins:int) -> list:
     E = (v[0]**2 + v[1]**2)*M[part_type]*0.5
@@ -367,6 +483,10 @@ def KE_distribution(part_type, v:cp.ndarray, M:cp.ndarray, bins:int) -> list:
 def V_distribution(v:cp.ndarray, bins:int) -> list:
     x = np.arange(bins)
     return (x, cp.asnumpy(cp.histogram(cp.hypot(v[0], v[1]), bins, density=True)[0]))
+
+def P_distribution(v:cp.ndarray, part_type:cp.ndarray, M:cp.ndarray, bins:int) -> list:
+    x = np.arange(bins)
+    return (x, cp.asnumpy(cp.histogram(cp.hypot(v[0], v[1]) * M[part_type], bins, density=True)[0]))
 
 def Vx_distribution(v:cp.ndarray, bins:int) -> list:
     x = np.arange(bins)

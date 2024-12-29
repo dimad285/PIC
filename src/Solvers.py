@@ -1,9 +1,8 @@
 import cupy as cp
-from typing import Tuple, Optional
-from enum import Enum
-import cupyx
-import cupyx.scipy.sparse
-import cupyx.scipy.sparse.linalg
+#import numpy as np
+#import cupyx as cpx
+from cupyx.scipy.sparse import diags, csr_matrix, eye, kron
+from cupyx.scipy.sparse.linalg import gmres
 
 def boundary_array(input: tuple, gridsize: tuple) -> tuple[cp.ndarray, cp.ndarray]:
     # Initialize Python-native lists for indices and values
@@ -12,7 +11,12 @@ def boundary_array(input: tuple, gridsize: tuple) -> tuple[cp.ndarray, cp.ndarra
     
     for segment in input:
         (m1, n1, m2, n2), V = segment  # Unpack segment
-        
+
+        m1 = int(m1)
+        n1 = int(n1)
+        m2 = int(m2)
+        n2 = int(n2)
+
         dm = cp.sign(m2 - m1).item()  # Convert to Python scalar
         dn = cp.sign(n2 - n1).item()  # Convert to Python scalar
         
@@ -63,6 +67,68 @@ def Laplacian_square(m, n) -> cp.ndarray:
                 
     return Lap.astype(cp.float32)
 
+def Laplacian_square_csr(m, n) -> cp.ndarray:
+    size = m * n
+    diagonals = []
+
+    # Main diagonal
+    main_diag = -4 * cp.ones(size)
+    diagonals.append(main_diag)
+
+    # Horizontal off-diagonals
+    off_diag_h = cp.ones(size)
+    off_diag_h[m - 1::m] = 0  # Remove connections across row boundaries
+    diagonals.append(off_diag_h[:-1])
+    diagonals.append(off_diag_h[:-1])  # Mirror for lower diagonal
+
+    # Vertical off-diagonals
+    off_diag_v = cp.ones(size - m)
+    diagonals.append(off_diag_v)
+    diagonals.append(off_diag_v)  # Mirror for opposite direction
+
+    # Sparse matrix creation
+    laplacian = diags(
+        diagonals,
+        [0, 1, -1, m, -m],  # Corresponding diagonal indices
+        shape=(size, size),
+        format="csr"
+    )
+    return laplacian
+
+def apply_boundary_conditions(Laplacian, boundary_nodes, boundary_value=0):
+    """
+    Apply Dirichlet boundary conditions directly to a CuPy CSR matrix.
+
+    Parameters:
+        Laplacian (cupyx.scipy.sparse.csr_matrix): The Laplacian matrix in CSR format.
+        boundary_nodes (array-like): Indices of boundary nodes in the flattened grid.
+        boundary_value (float): The value to enforce at the boundary nodes.
+
+    Returns:
+        cupyx.scipy.sparse.csr_matrix: The modified Laplacian matrix.
+    """
+    # Convert boundary nodes to CuPy array
+    boundary_nodes = cp.array(boundary_nodes, dtype=cp.int32)
+
+    # Get matrix components
+    data = Laplacian.data
+    indices = Laplacian.indices
+    indptr = Laplacian.indptr
+
+    # Iterate through boundary nodes
+    for node in boundary_nodes:
+        # Clear the row for the boundary node
+        start, end = indptr[node], indptr[node + 1]
+        data[start:end] = 0
+        indices[start:end] = -1  # Mark invalid indices (not strictly necessary)
+
+        # Set the diagonal element to 1
+        indptr[node + 1] = start + 1  # Only one element in the row
+        data[start] = 1
+        indices[start] = node
+
+    # Return updated Laplacian
+    return csr_matrix((data, indices, indptr), shape=Laplacian.shape)
 
 def Laplacian_cilindrical(m, n) -> cp.ndarray:
 
@@ -156,8 +222,8 @@ def restrict_grid(fine_grid, coarse_grid):
     Updates the `coarse_grid` in place.
     
     Parameters:
-    - fine_grid (cupy.ndarray): 2D array of the fine grid values (on GPU).
-    - coarse_grid (cupy.ndarray): 2D array of the coarser grid values (on GPU, updated in place).
+    - fine_grid (cp.ndarray): 2D array of the fine grid values (on GPU).
+    - coarse_grid (cp.ndarray): 2D array of the coarser grid values (on GPU, updated in place).
     """
     fine_nx, fine_ny = fine_grid.shape
     coarse_nx, coarse_ny = coarse_grid.shape
@@ -189,8 +255,8 @@ def interpolate_grid(coarse_grid, fine_grid):
     Updates the `fine_grid` in place.
     
     Parameters:
-    - coarse_grid (cupy.ndarray): 2D array of the coarse grid values (on GPU).
-    - fine_grid (cupy.ndarray): 2D array of the fine grid values (on GPU, updated in place).
+    - coarse_grid (cp.ndarray): 2D array of the coarse grid values (on GPU).
+    - fine_grid (cp.ndarray): 2D array of the fine grid values (on GPU, updated in place).
     """
     coarse_nx, coarse_ny = coarse_grid.shape
     fine_nx, fine_ny = fine_grid.shape
@@ -368,12 +434,6 @@ def setup_poisson_operator_gpu(m, n, dx, dy):
 
 
 
-def setup_ilu_preconditioner_gpu(A_sparse):
-    M = cupyx.scipy.sparse.linalg.spilu(A_sparse)  # ILU factorization
-    def M_inv(r):
-        return M.solve(r)
-    return M_inv
-
 def setup_jacobi_preconditioner_gpu(m, n, dx, dy):
     """
     Setup the Jacobi preconditioner for the Poisson equation.
@@ -422,178 +482,8 @@ def solve_poisson_pcg_gpu(rho, m, n, dx, dy, eps0, phi0=None, tol=1e-5, max_iter
     if preconditioner == "jacobi":
         M_inv = setup_jacobi_preconditioner_gpu(m, n, dx, dy)
         phi = preconditioned_cg_solver_gpu(A, M_inv, b, x0=phi0, tol=tol, max_iter=max_iter)
-    elif preconditioner == "ilu":
-        M_inv = setup_ilu_preconditioner_gpu(A)
-        phi = preconditioned_cg_solver_gpu(A, M_inv, b, x0=phi0, tol=tol, max_iter=max_iter)
     elif preconditioner == "none":
         phi = cg_solver_gpu(A, b, x0=phi0, tol=tol, max_iter=max_iter)
     return phi
 
 
-
-
-    """
-    A 2D Poisson equation solver using Fast Fourier Transform (FFT) method.
-    Supports periodic, Dirichlet, and Neumann boundary conditions.
-    Solves: ∇²φ = -ρ/ε₀
-    """
-    
-    def __init__(self, m: int, n: int, dx: float = 1.0, dy: float = 1.0, epsilon0: float = 1.0,
-                 boundary_type: BoundaryCondition = BoundaryCondition.PERIODIC):
-        """
-        Initialize the Poisson solver.
-        
-        Args:
-            m: Number of grid points in x direction
-            n: Number of grid points in y direction
-            dx: Grid spacing in x direction
-            dy: Grid spacing in y direction
-            epsilon0: Permittivity constant
-            boundary_type: Type of boundary condition
-        """
-        self.m = m
-        self.n = n
-        self.dx = dx
-        self.dy = dy
-        self.epsilon0 = epsilon0
-        self.boundary_type = boundary_type
-        
-        # Extended grid size for non-periodic boundaries
-        self.m_ext = m if boundary_type == BoundaryCondition.PERIODIC else 2 * m
-        self.n_ext = n if boundary_type == BoundaryCondition.PERIODIC else 2 * n
-        
-        self.k_sq = self._setup_wavenumbers()
-    
-    def _setup_wavenumbers(self) -> cp.ndarray:
-        """Set up the wavenumber arrays based on boundary conditions."""
-        if self.boundary_type == BoundaryCondition.PERIODIC:
-            kx = 2 * cp.pi * cp.fft.fftfreq(self.m, self.dx)
-            ky = 2 * cp.pi * cp.fft.fftfreq(self.n, self.dy)
-        else:
-            # For Dirichlet/Neumann, use sine/cosine transforms frequencies
-            kx = cp.pi * cp.arange(self.m_ext) / (self.m_ext * self.dx)
-            ky = cp.pi * cp.arange(self.n_ext) / (self.n_ext * self.dy)
-            
-        kx_grid, ky_grid = cp.meshgrid(kx, ky, indexing='ij')
-        k_sq = kx_grid**2 + ky_grid**2
-        k_sq[0, 0] = 1.0  # Avoid division by zero
-        return k_sq
-
-    def _apply_dirichlet_bc(self, phi: cp.ndarray, bc_values: dict) -> cp.ndarray:
-        """Apply Dirichlet boundary conditions."""
-        # Extract boundary values
-        top = bc_values.get('top', 0.0)
-        bottom = bc_values.get('bottom', 0.0)
-        left = bc_values.get('left', 0.0)
-        right = bc_values.get('right', 0.0)
-        
-        phi[0, :] = bottom  # Bottom boundary
-        phi[-1, :] = top    # Top boundary
-        phi[:, 0] = left    # Left boundary
-        phi[:, -1] = right  # Right boundary
-        
-        return phi
-
-    def _apply_neumann_bc(self, phi: cp.ndarray, bc_values: dict) -> cp.ndarray:
-        """Apply Neumann boundary conditions using finite differences."""
-        dx, dy = self.dx, self.dy
-        
-        # Extract boundary derivatives
-        dtop = bc_values.get('top', 0.0)
-        dbottom = bc_values.get('bottom', 0.0)
-        dleft = bc_values.get('left', 0.0)
-        dright = bc_values.get('right', 0.0)
-        
-        # Apply Neumann conditions using one-sided differences
-        phi[0, :] = phi[1, :] - dy * dbottom  # Bottom boundary
-        phi[-1, :] = phi[-2, :] + dy * dtop   # Top boundary
-        phi[:, 0] = phi[:, 1] - dx * dleft    # Left boundary
-        phi[:, -1] = phi[:, -2] + dx * dright # Right boundary
-        
-        return phi
-
-    def _extend_domain(self, rho: cp.ndarray) -> cp.ndarray:
-        """Extend the domain for non-periodic boundary conditions."""
-        if self.boundary_type == BoundaryCondition.PERIODIC:
-            return rho
-            
-        rho_ext = cp.zeros((self.m_ext, self.n_ext))
-        rho_ext[:self.m, :self.n] = rho
-        
-        if self.boundary_type == BoundaryCondition.DIRICHLET:
-            # Anti-symmetric extension for Dirichlet
-            rho_ext[self.m:, :self.n] = -cp.flip(rho, axis=0)
-            rho_ext[:, self.n:] = -cp.flip(rho_ext[:, :self.n], axis=1)
-        else:  # Neumann
-            # Symmetric extension for Neumann
-            rho_ext[self.m:, :self.n] = cp.flip(rho, axis=0)
-            rho_ext[:, self.n:] = cp.flip(rho_ext[:, :self.n], axis=1)
-            
-        return rho_ext
-
-    def solve(self, rho: cp.ndarray, bc_values: Optional[dict] = None) -> Tuple[cp.ndarray, float]:
-        """
-        Solve the Poisson equation with specified boundary conditions.
-        
-        Args:
-            rho: Charge density array
-            bc_values: Dictionary of boundary values/derivatives:
-                      For Dirichlet: {'top': val, 'bottom': val, 'left': val, 'right': val}
-                      For Neumann: {'top': dval, 'bottom': dval, 'left': dval, 'right': dval}
-        
-        Returns:
-            Tuple of (potential array, maximum error estimate)
-        """
-        #if isinstance(rho, np.ndarray):
-        #    rho = cp.array(rho)
-        rho_2d = rho.reshape(self.m, self.n)
-        
-        if self.boundary_type != BoundaryCondition.PERIODIC:
-            # Extend domain for non-periodic BCs
-            rho_ext = self._extend_domain(rho_2d)
-            
-            if self.boundary_type == BoundaryCondition.DIRICHLET:
-                # Use DST (Discrete Sine Transform)
-                phi_k = cp.fft.dstn(rho_ext / self.epsilon0, type=1)
-            else:  # Neumann
-                # Use DCT (Discrete Cosine Transform)
-                phi_k = cp.fft.dctn(rho_ext / self.epsilon0, type=1)
-        else:
-            # Standard FFT for periodic BC
-            phi_k = cp.fft.fftn(rho_2d / self.epsilon0)
-        
-        # Solve in frequency domain
-        phi_k = -phi_k / self.k_sq
-        
-        # Transform back to real space
-        if self.boundary_type == BoundaryCondition.DIRICHLET:
-            phi = cp.fft.idstn(phi_k, type=1)[:self.m, :self.n]
-        elif self.boundary_type == BoundaryCondition.NEUMANN:
-            phi = cp.fft.idctn(phi_k, type=1)[:self.m, :self.n]
-        else:
-            phi = cp.fft.ifftn(phi_k).real
-        
-        # Apply boundary conditions
-        if bc_values is not None:
-            if self.boundary_type == BoundaryCondition.DIRICHLET:
-                phi = self._apply_dirichlet_bc(phi, bc_values)
-            elif self.boundary_type == BoundaryCondition.NEUMANN:
-                phi = self._apply_neumann_bc(phi, bc_values)
-        
-        # Compute error estimate
-        residual = self._compute_residual(phi, rho_2d)
-        max_error = cp.max(cp.abs(residual))
-        
-        return phi.ravel(), max_error
-
-    def _compute_residual(self, phi: cp.ndarray, rho: cp.ndarray) -> cp.ndarray:
-        """Compute the residual of the solution."""
-        # Use finite differences for Laplacian to account for BCs
-        dx2, dy2 = self.dx**2, self.dy**2
-        
-        laplacian = (
-            (phi[:-2, 1:-1] - 2*phi[1:-1, 1:-1] + phi[2:, 1:-1]) / dx2 +
-            (phi[1:-1, :-2] - 2*phi[1:-1, 1:-1] + phi[1:-1, 2:]) / dy2
-        )
-        
-        return laplacian + rho[1:-1, 1:-1] / self.epsilon0

@@ -6,6 +6,9 @@ import OpenGL.GL.shaders as shaders
 import ctypes
 import freetype
 import glm
+from cuda import cudart
+from CuPy_TO_OpenGL import *
+
 
 # Vertex shader for particles
 PARTICLE_VERTEX_SHADER_2D = """
@@ -240,7 +243,7 @@ def get_view_matrix(eye, center, up):
     return view
 
 class PICRenderer:
-    def __init__(self, width, height, fontfile, renderer_type="particles", is_3d = False):
+    def __init__(self, width, height, fontfile, max_particles, renderer_type="particles", is_3d = False):
         self.width = width
         self.height = height
         self.fontfile = fontfile
@@ -249,6 +252,7 @@ class PICRenderer:
         self.is_3d = is_3d
         self.line_plot_type = None
         self.fov = np.radians(60)
+        self.particle_count = max_particles
         self.label_list = []
         print(f'Initializing {renderer_type} PIC Renderer...')
         
@@ -278,6 +282,7 @@ class PICRenderer:
         self.init_surface_rendering()
         # Initialize text rendering
         self.init_text_rendering()
+        self.init_boundary_rendering()
 
         glfw.swap_interval(0)
 
@@ -298,35 +303,57 @@ class PICRenderer:
         self.eye = eye
 
     def init_particle_rendering(self, is_3d=False):
-        if is_3d:
-            vertex_shader = shaders.compileShader(PARTICLE_VERTEX_SHADER_3D, GL_VERTEX_SHADER)
-            fragment_shader = shaders.compileShader(PARTICLE_FRAGMENT_SHADER_3D, GL_FRAGMENT_SHADER)
-            self.particle_shader_program = shaders.compileProgram(vertex_shader, fragment_shader)
-        else:
-            vertex_shader = shaders.compileShader(PARTICLE_VERTEX_SHADER_2D, GL_VERTEX_SHADER)
-            fragment_shader = shaders.compileShader(PARTICLE_FRAGMENT_SHADER, GL_FRAGMENT_SHADER)
-            self.particle_shader_program = shaders.compileProgram(vertex_shader, fragment_shader)
+        # Initialize shaders
+        self.is_3d = is_3d
+
+        particle_vertex_shader = """
+        #version 330
+        in vec3 position;
+        uniform mat4 projection;
+        uniform mat4 modelView;
+        void main() {
+            gl_Position = projection * modelView * vec4(position, 1.0);
+        }
+        """ if is_3d else """
+        #version 330
+        in vec2 position;
+        uniform mat4 projection;
+        uniform mat4 modelView;
+        void main() {
+            gl_Position = projection * modelView * vec4(position, 0.0, 1.0);
+        }
+        """
+
+        particle_fragment_shader = """
+        #version 330
+        out vec4 fragColor;
+        void main() {
+            fragColor = vec4(1.0, 1.0, 1.0, 1.0);
+        }
+        """
+
+        vertex_shader = shaders.compileShader(particle_vertex_shader, GL_VERTEX_SHADER)
+        fragment_shader = shaders.compileShader(particle_fragment_shader, GL_FRAGMENT_SHADER)
+        self.particle_shader_program = shaders.compileProgram(vertex_shader, fragment_shader)
+
+        # Get uniform locations for projection and modelView matrices
+        self.projection_loc = glGetUniformLocation(self.particle_shader_program, "projection")
+        self.modelview_loc = glGetUniformLocation(self.particle_shader_program, "modelView")
+
+        # Initialize particle buffer with CUDA/OpenGL interop
+        particle_vertex_size = 3 if is_3d else 2
         
-        self.particle_vao = glGenVertexArrays(1)
-        glBindVertexArray(self.particle_vao)
+        self.particle_vertex_size = particle_vertex_size
         
+        vertex_bytes = self.particle_count * particle_vertex_size * np.float32().nbytes
+
+        flags = cudart.cudaGraphicsRegisterFlags.cudaGraphicsRegisterFlagsWriteDiscard
+
         self.particle_vbo = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self.particle_vbo)
+        glBufferData(GL_ARRAY_BUFFER, vertex_bytes, None, GL_DYNAMIC_DRAW)
         
-        if is_3d:
-            glEnableVertexAttribArray(0)
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, None)
-        else:
-            position_attrib = glGetAttribLocation(self.particle_shader_program, "position")
-            glEnableVertexAttribArray(position_attrib)
-            glVertexAttribPointer(position_attrib, 2, GL_FLOAT, GL_FALSE, 12, ctypes.c_void_p(0))
-        
-            type_attrib = glGetAttribLocation(self.particle_shader_program, "particleType")
-            glEnableVertexAttribArray(type_attrib)
-            glVertexAttribPointer(type_attrib, 1, GL_FLOAT, GL_FALSE, 12 if not is_3d else 16, ctypes.c_void_p(8))
-            
-        glBindBuffer(GL_ARRAY_BUFFER, 0)
-        glBindVertexArray(0)
+        self.particle_buffer = CudaOpenGLMappedArray(np.float32, (self.particle_count, particle_vertex_size), self.particle_vbo, flags)
 
     def init_text_rendering(self):
         vertex_shader = shaders.compileShader(TEXT_VERTEX_SHADER, GL_VERTEX_SHADER)
@@ -439,26 +466,45 @@ class PICRenderer:
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
 
-
-    def update_particles(self, particle_positions, particle_types, X_max, Y_max, X_min, Y_min):
-
-        assert particle_positions.shape[0] == 2, "Position shape should be (2, n)"
-        assert particle_positions.shape[1] == particle_types.shape[0], "Number of positions and types should match"
-
-            
-        gl_positions_x = 2.0 * particle_positions[0] - (X_max - X_min)
-        gl_positions_y = 2.0 * particle_positions[1] - (Y_max - Y_min)
-        gl_positions = cp.array([gl_positions_x, gl_positions_y], dtype=cp.float32)
-        gl_positions = cp.ascontiguousarray(gl_positions.T).astype(cp.float32)
+    def init_boundary_rendering(self):
+        vertex_shader = shaders.compileShader(LINE_PLOT_VERTEX_SHADER, GL_VERTEX_SHADER)
+        fragment_shader = shaders.compileShader(LINE_PLOT_FRAGMENT_SHADER, GL_FRAGMENT_SHADER)
+        self.boundary_shader_program = shaders.compileProgram(vertex_shader, fragment_shader)
         
-        particle_data = cp.column_stack((gl_positions, particle_types.astype(cp.float32)))
-        particle_data_cpu = particle_data.get()
+        self.boundary_vao = glGenVertexArrays(1)
+        glBindVertexArray(self.boundary_vao)
         
-        glBindBuffer(GL_ARRAY_BUFFER, self.particle_vbo)
-        glBufferData(GL_ARRAY_BUFFER, particle_data_cpu.nbytes, particle_data_cpu, GL_STATIC_DRAW)
+        self.boundary_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.boundary_vbo)
+        
+        position_attrib = glGetAttribLocation(self.boundary_shader_program, "position")
+        glEnableVertexAttribArray(position_attrib)
+        glVertexAttribPointer(position_attrib, 2, GL_FLOAT, GL_FALSE, 0, None)
+        
         glBindBuffer(GL_ARRAY_BUFFER, 0)
-        
-        self.num_particles = gl_positions.shape[0]
+        glBindVertexArray(0)
+
+    def update_particles(self, particle_positions, x_min, x_max, y_min, y_max):
+        """
+        Update particle positions on the GPU using CuPy.
+
+        :param particle_positions: CuPy array of shape (2, n) for 2D positions or (3, n) for 3D positions.
+        """
+        num_particles = particle_positions.shape[1]
+        assert num_particles <= self.particle_count, (
+            f"Number of particles ({num_particles}) exceeds buffer size ({self.particle_count})."
+        )
+        assert particle_positions.shape[0] == self.particle_vertex_size, (
+            f"Particle positions must have {self.particle_vertex_size} dimensions."
+        )
+
+        # Normalize particle positions from simulation space [0, 1] to OpenGL space [-1, 1]
+        normalized_positions = 2.0 * (particle_positions - x_min) / (x_max - x_min) - 1.0 
+
+        with self.particle_buffer as particle_data:
+            particle_data[:num_particles, :] = normalized_positions.T
+
+
 
     def update_particles_3d(self, particle_positions):
         gl_positions = 2.0 * particle_positions - 1.0
@@ -632,21 +678,34 @@ class PICRenderer:
             vertices = np.vstack([tri1, tri2])
             return vertices.astype(np.float32)
         
+
         def generate_wireframe_vertices(X, Y, Z):
-            wireframe_lines = []
-
             rows, cols = X.shape
-            for i in range(rows - 1):
-                for j in range(cols - 1):
-                    # Horizontal line at top of quad
-                    wireframe_lines.append([X[i, j], Y[i, j], Z[i, j]])
-                    wireframe_lines.append([X[i, j+1], Y[i, j+1], Z[i, j+1]])
-                    
-                    # Vertical line on right of quad
-                    wireframe_lines.append([X[i, j+1], Y[i, j+1], Z[i, j+1]])
-                    wireframe_lines.append([X[i+1, j+1], Y[i+1, j+1], Z[i+1, j+1]])
+            
+            # Total number of lines: horizontal + vertical
+            # Horizontal lines: rows * (cols-1)
+            # Vertical lines: cols * (rows-1)
+            total_lines = rows * (cols-1) + cols * (rows-1)
+            
+            # Pre-allocate the entire wireframe array at once
+            wireframe_lines = np.zeros((total_lines, 6), dtype=np.float32)
+            line_count = 0
 
-            return np.array(wireframe_lines, dtype=np.float32)
+            # Horizontal lines (across each row)
+            for i in range(rows):
+                for j in range(cols - 1):
+                    wireframe_lines[line_count, :3] = [X[i,j], Y[i,j], Z[i,j]]
+                    wireframe_lines[line_count, 3:] = [X[i,j+1], Y[i,j+1], Z[i,j+1]]
+                    line_count += 1
+
+            # Vertical lines (down each column)
+            for j in range(cols):
+                for i in range(rows - 1):
+                    wireframe_lines[line_count, :3] = [X[i,j], Y[i,j], Z[i,j]]
+                    wireframe_lines[line_count, 3:] = [X[i+1,j], Y[i+1,j], Z[i+1,j]]
+                    line_count += 1
+
+            return wireframe_lines
         
         vertices = generate_vertices(X, Y, Z)
         self.num_surface_vertices = vertices.shape[0]
@@ -663,11 +722,66 @@ class PICRenderer:
         glBufferData(GL_ARRAY_BUFFER, wireframe_vertices.nbytes, wireframe_vertices, GL_STATIC_DRAW)
         glBindBuffer(GL_ARRAY_BUFFER, 0)
 
-    def render_particles(self):
+
+    def update_boundaries(self, boundary_segments, grid_shape):
+        """
+        Update the boundary data using a list of line segments.
+        
+        :param boundary_segments: List of tuples [(x0, y0, x1, y1), ...] defining the line segments.
+        :param grid_shape: Tuple (rows, cols) defining the dimensions of the grid.
+        """
+        rows, cols = grid_shape
+        
+        # Convert to normalized OpenGL coordinates
+        normalized_segments = []
+        for x0, y0, x1, y1 in boundary_segments:
+            x0_normalized = 2.0 * x0 / (cols-1) - 1.0
+            y0_normalized = 2.0 * y0 / (rows-1) - 1.0
+            x1_normalized = 2.0 * x1 / (cols-1) - 1.0
+            y1_normalized = 2.0 * y1 / (rows-1) - 1.0
+            normalized_segments.extend([(x0_normalized, y0_normalized), (x1_normalized, y1_normalized)])
+        
+        # Convert to NumPy array
+        boundary_lines = np.array(normalized_segments, dtype=np.float32)
+        
+        # Update OpenGL buffer
+        glBindBuffer(GL_ARRAY_BUFFER, self.boundary_vbo)
+        glBufferData(GL_ARRAY_BUFFER, boundary_lines.nbytes, boundary_lines, GL_STATIC_DRAW)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        
+        self.num_boundary_vertices = len(boundary_lines)
+
+
+    def render_particles(self, projection_matrix=None, modelview_matrix=None):
+        """
+        Render particles using the updated buffer.
+
+        :param projection_matrix: 4x4 numpy array representing the projection matrix. Defaults to identity.
+        :param modelview_matrix: 4x4 numpy array representing the model-view matrix. Defaults to identity.
+        """
+        if projection_matrix is None:
+            projection_matrix = np.eye(4, dtype=np.float32)
+        if modelview_matrix is None:
+            modelview_matrix = np.eye(4, dtype=np.float32)
+
         glUseProgram(self.particle_shader_program)
-        glBindVertexArray(self.particle_vao)
-        glDrawArrays(GL_POINTS, 0, self.num_particles)
-        glBindVertexArray(0)
+
+        # Pass projection and modelView matrices to the shader
+        glUniformMatrix4fv(self.projection_loc, 1, GL_FALSE, projection_matrix)
+        glUniformMatrix4fv(self.modelview_loc, 1, GL_FALSE, modelview_matrix)
+        
+        # Bind particle buffer
+        glBindBuffer(GL_ARRAY_BUFFER, self.particle_vbo)
+        
+        position_attrib = glGetAttribLocation(self.particle_shader_program, "position")
+        glEnableVertexAttribArray(position_attrib)
+        glVertexAttribPointer(position_attrib, self.particle_vertex_size, GL_FLOAT, GL_FALSE, 0, None)
+        
+        glDrawArrays(GL_POINTS, 0, self.particle_count)
+
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+
+
 
     def render_particles_3d(self, fov=10.0, camera_position=(0.0, 0.0, 1.0), target=(0.0, 0.0, 0.0)):
         """
@@ -817,7 +931,15 @@ class PICRenderer:
         glDrawArrays(GL_LINES, 0, self.num_wireframe_vertices)
         glBindVertexArray(0)
 
-    def render(self, clear=True, TEXT_RENDERING=True):
+    def render_boundaries(self, color=(1.0, 0.0, 0.0)):
+        glUseProgram(self.boundary_shader_program)
+        glUniform3f(glGetUniformLocation(self.boundary_shader_program, "lineColor"), *color)
+        
+        glBindVertexArray(self.boundary_vao)
+        glDrawArrays(GL_LINES, 0, self.num_boundary_vertices)
+        glBindVertexArray(0)
+
+    def render(self, clear=True, TEXT_RENDERING=True, GRID_RENDERING=False, BOUNDARY_RENDERING=False):
         if clear:
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
             glClearColor(0.0, 0.0, 0.0, 1.0)  # Black background
@@ -827,7 +949,12 @@ class PICRenderer:
                 glEnable(GL_DEPTH_TEST)
                 # Set projection and view matrices for 3D
                 self.render_particles_3d(fov=self.fov, camera_position=self.eye, target=(0.0, 0.0, 0.0))
+                
             self.render_particles()
+            if GRID_RENDERING:
+                pass
+            if BOUNDARY_RENDERING:
+                self.render_boundaries()
         elif self.renderer_type == "heatmap":
             self.render_heatmap()
         elif self.renderer_type == "line_plot":

@@ -1,88 +1,55 @@
-from main import *
-import matplotlib.pyplot as plt
 import numpy as np
-import cupy as cp
-import Update
-import Solvers
+from vispy import app, gloo
 
+# Initialize the particle data
+n_particles = 100000
+positions = np.random.rand(n_particles, 2).astype(np.float32)  # 2D positions
+colors = np.random.rand(n_particles, 4).astype(np.float32)  # RGBA colors
 
-m = 16  #x axis nodes
-n = 16  #y axis nodes
-grid = (m, n)
-N = 1000 #particles
-dt = 0.001
-q = 10
+# OpenGL shaders for rendering points
+vertex_shader = """
+attribute vec2 a_position;
+attribute vec4 a_color;
+varying vec4 v_color;
 
-X = 1
-Y = 1
+void main() {
+    v_color = a_color;
+    gl_Position = vec4(a_position, 0.0, 1.0);
+    gl_PointSize = 2.0;
+}
+"""
 
-x = np.linspace(0, X, m, dtype=cp.float32)  
-y = np.linspace(0, Y, n, dtype=cp.float32)
+fragment_shader = """
+varying vec4 v_color;
 
-rho = cp.zeros((m*n), dtype=cp.float32)
-phi = cp.zeros((m*n), dtype=cp.float32)
-E = cp.zeros((3, m*n), dtype=cp.float32)
+void main() {
+    gl_FragColor = v_color;
+}
+"""
 
-R = cp.random.rand(2, N)
-R_grid = cp.zeros((2, N), dtype=cp.int16)
-V = cp.zeros((3, N), dtype=cp.float32)
-Q = cp.ones(N, dtype=cp.float32)
-M = cp.ones(N, dtype=cp.float32)
+# Create a canvas and program
+class ParticleCanvas(app.Canvas):
+    def __init__(self):
+        app.Canvas.__init__(self, keys='interactive', size=(800, 800))
+        self.program = gloo.Program(vertex_shader, fragment_shader)
 
-boundary1 = ([int(m/4*3), int(n/4*3), int(m/4*3), int(n/4)], 100)
-boundary2 = ([int(m/4), int(n/4*3), int(m/4), int(n/4)], -100)
+        # Bind particle data to shaders
+        self.program['a_position'] = positions
+        self.program['a_color'] = colors
 
-boundarys = (boundary1, boundary2)
-bound = Solvers.boundary_array(boundarys, grid)
+        # OpenGL settings
+        gloo.set_state(clear_color='black', blend=True, blend_func=('src_alpha', 'one_minus_src_alpha'))
 
-print('creating Laplacian...')
-#cp.savetxt('lap.txt', Lap, fmt='%i')
-Lap = Solvers.Laplacian(m, n)
-#Solvers.boundary_conditions_left_gpu(Lap, bound)
-inv_Lap = cp.linalg.inv(Lap)
-del Lap
+        self.timer = app.Timer('auto', connect=self.update, start=True)
 
-print('creating renderer...')
-plt.style.use('dark_background')
-fig = plt.figure()
-ax_phi = fig.add_subplot(121, projection='3d')
-ax_phi.set_xlabel('X')
-ax_phi.set_ylabel('Y')
-ax_phi.set_zlabel('Phi')
+    def on_draw(self, event):
+        gloo.clear()
+        self.program.draw('points')  # Render points
 
-#ax_r = fig.add_subplot(111) 
+    def on_resize(self, event):
+        gloo.set_viewport(0, 0, *event.size)
 
-ax_E = fig.add_subplot(122)
-
-X, Y = np.meshgrid(x, y)
-
-plt.ion()
-
-print('running...')
-while True:
-
-    #UPDATE
-    Update.push_gpu(R, V, E,Q, M, grid, dt)
-    Update.update_density_gpu(R, rho, 1, 1, grid, q)
-    #Update.boundary_conditions_right_gpu(rho, bound)
-    #Solvers.sor_gpu_sparse_matrix(grid, phi, rho, w=1, residual=1e-8)
-    #rho[bound[0]] = bound[1]
-    phi[:] = cp.dot(inv_Lap, rho)
-    Update.updateE_gpu(E, phi, 1, 1, grid)
-
-    phi_plot = phi.get()
-    Ex_plot = E[0].get()
-    Ey_plot = E[1].get()
-
-    ax_phi.clear()
-    #ax_r.clear()
-    ax_E.clear()
-    ax_phi.plot_surface(X, Y, phi_plot.reshape(grid), cmap='plasma', alpha=0.8)
-    #ax_r.scatter(R[0], R[1], s=1, c='g')
-    ax_E.quiver(X, Y, Ex_plot.reshape(grid), Ey_plot.reshape(grid), color='w')
-    plt.draw()
-    plt.pause(0.001)
-
-plt.show()
-
-#print(Solvers.Laplacian(m, n))
+# Run the canvas
+canvas = ParticleCanvas()
+canvas.show()
+app.run()
