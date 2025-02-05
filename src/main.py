@@ -24,8 +24,6 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
     t = 0
     sim_time = 0
     frame_time = 0
-    dx = X/(m-1)
-    dy = Y/(n-1)
 
     # INIT
     print('creating arrays...')
@@ -58,8 +56,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
         
     # MAIN LOOP
     el_k = 1
-    #simulation.uniform_particle_load(X * 0.5, Y * 0.5, dx, dy, R, V, part_type, last_alive, max_particles//2)
-    particles.uniform_species_load(X * 0.25, Y * 0.25, dx, dy, el_k, 'electron')
+    particles.uniform_species_load(X * 0.25, Y * 0.25, X/(m-1), Y/(n-1), el_k, 'electron')
     particles.update_bilinear_weights(grid)
     particles.sort_particles_sparse(grid.cell_count)
 
