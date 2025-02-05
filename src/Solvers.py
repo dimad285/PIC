@@ -3,6 +3,9 @@ import cupy as cp
 #import cupyx as cpx
 from cupyx.scipy.sparse import diags, csr_matrix, eye, kron
 from cupyx.scipy.sparse.linalg import gmres
+import Consts
+import Grid
+
 
 def boundary_array(input: tuple, gridsize: tuple) -> tuple[cp.ndarray, cp.ndarray]:
     # Initialize Python-native lists for indices and values
@@ -487,3 +490,104 @@ def solve_poisson_pcg_gpu(rho, m, n, dx, dy, eps0, phi0=None, tol=1e-5, max_iter
     return phi
 
 
+
+
+class Solver():
+    def __init__(self, solver_type:str, grid:Grid.Grid2D, boundaries=None):
+        
+        self.solver_type = solver_type
+
+        self.m = grid.m
+        self.n = grid.n
+        self.dx = grid.dx
+        self.dy = grid.dy
+        self.cyilindrical = grid.cylindrical
+
+        self.boundaries = boundaries
+
+        self.init_solver()
+
+        
+    def init_solver(self):
+        
+        match self.solver_type:
+            case 'inverse': # add matrix compression
+                print('creating Laplacian...')
+                self.Lap = Laplacian_square(self.m, self.n)
+                if self.boundaries != None:
+                    print('applying boundary conditions...')
+                    boundary_conditions_left_gpu(self.Lap, self.boundaries[0])
+
+                print('creating inverse Laplacian...')
+                self.Lap = cp.linalg.inv(self.Lap)
+            case 'fft':
+                if not self.cilindrical:
+                    #fft_solver = Solvers.PoissonFFTSolver(m, n, dx, dy, Consts.eps0)
+                    self.k_sq = setup_fft_solver(self.m, self.n, self.dx, self.dy)
+                else:
+                    pass
+            case 'cg': # add boundary conditions
+                print('Using Conjugate Gradient solver')
+                self.Lap = Laplacian_square_csr(self.m, self.n)
+            case 'cg_fft':
+                print('Using Conjugate Gradient solver')
+                self.k_sq = setup_fft_solver(self.m, self.n)
+            case 'multigrid':
+                number_of_levels = 2
+                phi_multigrid = []
+                rho_multigrid = []
+                if self.m//((number_of_levels+1)**2) >= 2:
+                    pass
+                else:
+                    number_of_levels -= 1
+                for i in range(1, number_of_levels+1):
+                    phi_multigrid.append(cp.zeros((self.m//(2**i) + 1, self.n//(2**i) + 1), dtype=cp.float32))
+                    rho_multigrid.append(cp.zeros((self.m//(2**i) + 1, self.n//(2**i) + 1), dtype=cp.float32))
+                self.Lap_multigrid = Laplacian_square(*phi_multigrid[-1].shape)
+            case 'gmres':
+                print('Using GMRES solver')
+                self.Lap = Laplacian_square_csr(self.m, self.n)
+                if self.boundaries != None:
+                    print('applying boundary conditions...')
+                    apply_boundary_conditions(self.Lap, *self.boundaries)
+                #Lap = Solvers.Laplacian_square(m, n)
+                #cp.savetxt('laplacian.txt', Lap.todense(), fmt = '%i')
+                #cp.savetxt('laplacian2.txt', Lap2, fmt = '%i')
+
+
+    def solve(self, grid: Grid.Grid2D):
+
+        if self.boundaries != None:
+            grid.b[:] = -grid.rho * Consts.eps0_1
+            grid.b[self.boundaries[0]] = self.boundaries[1]
+        else:
+            grid.b[:] = -grid.rho * Consts.eps0_1
+
+        match self.solver_type:
+            case 'inverse':
+                grid.phi[:] = cp.dot(self.Lap, grid.b)
+            case 'fft':
+                #phi, error = fft_solver.solve(-rho)
+                grid.phi[:] = solve_poisson_fft(grid.rho, self.k_sq, Consts.eps0)
+            case 'cg':
+                #phi, iter = cpx.scipy.sparse.linalg.cg(Lap, -rho * Consts.eps0_1 * dx * dy, x0=phi, tol=1e-2)
+                grid.phi[:] = solve_poisson_pcg_gpu(grid.rho, grid.m, grid.n, grid.dx, grid.dy, Consts.eps0, phi0=grid.phi, tol=1e-2, preconditioner='none')
+
+            
+            case 'multigrid':
+                pass
+                '''
+                Solvers.restrict_grid(cp.reshape(rho, (m,n)), rho_multigrid[0])
+                Solvers.restrict_grid(rho_multigrid[0], rho_multigrid[1])
+                phi_multigrid[1] = cp.dot(Lap_multigrid, -rho_multigrid[1].flatten() * Consts.eps0_1 * dx * dy).reshape(phi_multigrid[1].shape)
+                Solvers.interpolate_grid(phi_multigrid[1], phi_multigrid[0])
+                phi_tmp_1 = Solvers.solve_poisson_pcg_gpu(rho_multigrid[0].flatten(), *phi_multigrid[0].shape, X/phi_multigrid[0].shape[0], Y/phi_multigrid[0].shape[1], Consts.eps0, phi0=phi_multigrid[0].flatten(), max_iter=10)
+                phi_tmp = cp.zeros((m,n))
+                Solvers.interpolate_grid(phi_tmp_1.reshape(phi_multigrid[0].shape), phi_tmp)
+                #phi = phi_tmp.flatten()
+                phi = Solvers.solve_poisson_pcg_gpu(rho, m, n, dx, dy, Consts.eps0, phi0=phi_tmp.flatten(), max_iter=10)
+                '''
+            case 'gmres':
+                grid.phi[:], iter = gmres(self.Lap, grid.b, x0=grid.phi, tol=1e-2)
+            case None:
+                pass

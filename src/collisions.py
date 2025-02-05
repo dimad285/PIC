@@ -1,5 +1,6 @@
 import cupy as cp
-
+import Particles
+import Grid
 
 def collision_map(boundaries, gridsize):
     """
@@ -35,6 +36,36 @@ def collision_map(boundaries, gridsize):
     return cp.array(coll_map)
 
 
+
+def mark_cell_walls_sparse(wall_nodes, grid_shape):
+    Nx, Ny = grid_shape  # Number of nodes in x and y directions
+    cell_indices = []
+    wall_directions = []
+
+    for node_idx in wall_nodes:
+        # Convert node index to 2D coordinates
+        i, j = divmod(node_idx, Ny)
+
+        # Vertical wall logic
+        if j > 0:  # Left wall (affects the right wall of the left cell)
+            cell_idx = i * (Ny - 1) + (j - 1)
+            if cell_idx not in cell_indices:
+                cell_indices.append(cell_idx)
+                wall_directions.append(0)
+            wall_directions[cell_indices.index(cell_idx)] |= 0b0010  # Right wall
+        if j < Ny - 1:  # Right wall (affects the left wall of the right cell)
+            cell_idx = i * (Ny - 1) + j
+            if cell_idx not in cell_indices:
+                cell_indices.append(cell_idx)
+                wall_directions.append(0)
+            wall_directions[cell_indices.index(cell_idx)] |= 0b0001  # Left wall
+
+    # Convert lists to CuPy arrays
+    cell_indices = cp.array(cell_indices, dtype=cp.int32)
+    wall_directions = cp.array(wall_directions, dtype=cp.uint8)
+    return cell_indices, wall_directions
+
+
 def collision_map_new(boundaries, gridsize):
     """
     Precompute a collision map for a 2D grid with boundary conditions.
@@ -62,7 +93,7 @@ def collision_map_new(boundaries, gridsize):
         # Check bottom neighbor (i + n)
         if (i + n) < total_cells:  # Stay within bounds
             if (i + n) in boundary_set:
-                coll_map.append([i, i + 1])
+                coll_map.append([i, i - 1])
     
     return cp.array(coll_map)
 
@@ -116,6 +147,292 @@ def check_collisions(indices: cp.ndarray, collision_pairs: cp.ndarray, last_aliv
         
     return cp.array(list(set(colliding_particles)))  #
 
+
+
+def detect_collisions(positions, velocities, sorted_indices, active_cells, 
+                     cell_shifts, cell_indices, wall_directions,
+                     grid_shape, cell_size):
+    """
+    Detect and handle collisions between particles and walls in a grid-based simulation.
+    
+    Parameters:
+    -----------
+    positions : ndarray, shape=(2, n_particles)
+        X,Y coordinates of particles
+    velocities : ndarray, shape=(2, n_particles)
+        Velocity vectors of particles
+    sorted_indices : ndarray
+        Indices of particles sorted by cell
+    active_cells : ndarray
+        Indices of cells that need collision checking
+    cell_shifts : ndarray
+        Starting indices in sorted_indices for each cell
+    cell_indices : ndarray
+        Mapping of cells to wall configurations
+    wall_directions : ndarray
+        Bit masks indicating wall presence (0b1000=bottom, 0b0100=top, 
+        0b0010=right, 0b0001=left)
+    grid_shape : tuple(int, int)
+        Number of cells in X,Y directions (Nx, Ny)
+    cell_size : tuple(float, float)
+        Size of each cell in X,Y directions (dx, dy)
+    """
+    Nx, Ny = grid_shape
+    Nx -= 1; Ny -= 1  # Turn node coun into cell count
+    dx, dy = cell_size
+    
+    # Pre-compute wall direction bit masks for efficiency
+    WALL_LEFT = 0b0001
+    WALL_RIGHT = 0b0010
+    WALL_TOP = 0b0100
+    WALL_BOTTOM = 0b1000
+
+
+    for active_cell in active_cells:
+        if active_cell not in cell_indices:
+            continue
+            
+        wall_idx = cp.where(cell_indices == active_cell)[0][0]
+        wall_mask = wall_directions[wall_idx]
+        
+        start = cell_shifts[active_cell]
+        end = cell_shifts[active_cell + 1] if active_cell + 1 < len(cell_shifts) else len(sorted_indices)
+        particle_indices = sorted_indices[start:end]
+        
+        if len(particle_indices) == 0:
+            continue
+            
+        cell_positions = positions[:, particle_indices]
+        cell_velocities = velocities[:, particle_indices]
+        
+        # Fixed cell boundary calculation
+        cy = active_cell % Ny
+        cx = active_cell // Ny
+        
+        # Calculate exact boundaries based on cell index
+        x_min = (cx + 1) * dx # Costyl' cx+1 vmesto cx, ya ne znayu pochemu
+        x_max = (cx + 1) * dx
+        y_min = cy * dy
+        y_max = (cy + 1) * dy
+        
+        # Add debug prints
+        # print(f"Cell {active_cell}: cx={cx}, cy={cy}, x_min={x_min:.6f}, x_max={x_max:.6f}")
+        
+        if wall_mask & WALL_LEFT:
+            #print("Left collision   ", cell_positions[0], x_min)
+            left_collision = cell_positions[0] < x_min
+            cell_velocities[0, left_collision] *= -1
+            cell_positions[0, left_collision] = x_min + 1e-6
+            
+        if wall_mask & WALL_RIGHT:
+            right_collision = cell_positions[0] > x_max
+            cell_velocities[0, right_collision] *= -1
+            cell_positions[0, right_collision] = x_max - 1e-6
+            
+        if wall_mask & WALL_TOP:
+            top_collision = cell_positions[1] > y_max
+            cell_velocities[1, top_collision] *= -1
+            cell_positions[1, top_collision] = y_max - 1e-6
+            
+        if wall_mask & WALL_BOTTOM:
+            bottom_collision = cell_positions[1] < y_min
+            cell_velocities[1, bottom_collision] *= -1
+            cell_positions[1, bottom_collision] = y_min + 1e-6
+        
+        positions[:, particle_indices] = cell_positions
+        velocities[:, particle_indices] = cell_velocities
+
+
+
+def detect_collisions_optimized(positions, velocities, sorted_indices, active_cells, 
+                              cell_shifts, cell_indices, wall_directions,
+                              grid_shape, cell_size):
+    """
+    Optimized version of collision detection with vectorized operations and improved memory access.
+    Fixes issues with wall collision detection and improves performance.
+
+    Parameters:
+    -----------
+    positions : ndarray, shape=(2, n_particles)
+        X,Y coordinates of particles
+    velocities : ndarray, shape=(2, n_particles)
+        Velocity vectors of particles
+    sorted_indices : ndarray
+        Indices of particles sorted by cell
+    active_cells : ndarray  # cupy array
+        Indices of cells that need collision checking
+    cell_shifts : ndarray
+        Starting indices in sorted_indices for each cell
+    cell_indices : ndarray
+        Mapping of cells to wall configurations
+    wall_directions : ndarray
+        Bit masks indicating wall presence (0b1000=bottom, 0b0100=top, 
+        0b0010=right, 0b0001=left)
+    grid_shape : tuple(int, int)
+        Number of cells in X,Y directions (Nx, Ny)
+    cell_size : tuple(float, float)
+        Size of each cell in X,Y directions (dx, dy)
+    """
+    Nx, Ny = grid_shape
+    dx, dy = cell_size
+    
+    # Pre-compute wall direction bit masks as uint8 for faster bit operations
+    WALL_MASKS = cp.array([0b0001, 0b0010, 0b0100, 0b1000], dtype=cp.uint8)
+    
+    # Filter out inactive cells early
+    valid_cells = cp.isin(active_cells, cell_indices)
+    print("active_cells: ", active_cells, "valid_cells: ", valid_cells, end='   ')
+    active_cells = active_cells[valid_cells]
+    print("active_cells: ", active_cells)
+
+    if len(active_cells) == 0:
+        return
+    
+    # Get wall indices for all active cells at once
+    wall_indices = cp.searchsorted(cell_indices, active_cells)
+    wall_masks = wall_directions[wall_indices]
+    
+    # Prepare arrays for vectorized operations
+    cell_x = (active_cells // Ny).astype(cp.float32) * dx # Move outside loop
+    cell_y = (active_cells % Ny).astype(cp.float32) * dy
+    
+    # Pre-compute cell boundaries for all active cells
+    x_mins = cell_x
+    x_maxs = cell_x + dx
+    y_mins = cell_y
+    y_maxs = cell_y + dy
+    
+    # Process cells in batches for better memory efficiency
+    BATCH_SIZE = 256
+    n_cells = len(active_cells)
+    
+    # Calculate maximum particles per cell safely
+    if len(cell_shifts) <= 1:
+        max_particles_per_cell = len(sorted_indices)  # Use total number of particles if only one cell
+    else:
+        cell_sizes = cp.diff(cell_shifts)
+        if len(cell_sizes) == 0:
+            max_particles_per_cell = 0  # No particles case
+        else:
+            max_particles_per_cell = int(cp.max(cell_sizes).get())
+    
+    # If no particles to process, return early
+    if max_particles_per_cell == 0:
+        return
+        
+    # Pre-allocate reusable arrays for collision masks
+    collision_mask = cp.zeros(max_particles_per_cell, dtype=bool)
+    
+    for batch_start in range(0, n_cells, BATCH_SIZE):
+        batch_end = min(batch_start + BATCH_SIZE, n_cells)
+        batch_cells = active_cells[batch_start:batch_end]
+        
+        # Get particle ranges for this batch
+        starts = cell_shifts[batch_cells]
+        ends = cell_shifts[batch_cells+1]
+        
+        # Process each cell in the batch
+        for i, (cell_idx, start, end) in enumerate(zip(batch_cells, starts, ends)):
+
+            #if start > end:  # Changed from start >= end to start > end
+            #    continue
+            print(f"Cell {cell_idx}: start={start}, end={end}")    
+            # Get particles for this cell
+            particle_indices = sorted_indices[start:end]
+            n_particles = len(particle_indices)
+            
+            #if n_particles == 0:  # Skip if no particles after all
+            #    continue
+                
+            pos = positions[:, particle_indices]
+            vel = velocities[:, particle_indices]
+            
+            wall_mask = wall_masks[batch_start + i]
+            
+            # Reset collision mask for current cell
+            collision_mask[:n_particles] = False
+            
+            # Vectorized collision detection with boundary tolerance
+            EPSILON = 1e-6
+            
+            if wall_mask & WALL_MASKS[0]:  # Left wall
+                left_mask = pos[0] <= x_mins[batch_start + i]
+                collision_mask[:n_particles] |= left_mask
+                print("Left collision   ", pos[0], x_mins[batch_start + i])
+                print("Left mask: ", left_mask)
+                vel[0, left_mask] = cp.abs(vel[0, left_mask])
+                pos[0, left_mask] = x_mins[batch_start + i] + EPSILON
+                
+            if wall_mask & WALL_MASKS[1]:  # Right wall
+                right_mask = pos[0] >= x_maxs[batch_start + i]
+                collision_mask[:n_particles] |= right_mask
+                print("Right collision   ", pos[0], x_maxs[batch_start + i])
+                print("Right mask: ", right_mask)
+                vel[0, right_mask] = -cp.abs(vel[0, right_mask])
+                pos[0, right_mask] = x_maxs[batch_start + i] - EPSILON
+                
+            if wall_mask & WALL_MASKS[2]:  # Top wall
+                top_mask = pos[1] >= y_maxs[batch_start + i]
+                collision_mask[:n_particles] |= top_mask
+                vel[1, top_mask] = -cp.abs(vel[1, top_mask])
+                pos[1, top_mask] = y_maxs[batch_start + i] - EPSILON
+                
+            if wall_mask & WALL_MASKS[3]:  # Bottom wall
+                bottom_mask = pos[1] <= y_mins[batch_start + i]
+                collision_mask[:n_particles] |= bottom_mask
+                vel[1, bottom_mask] = cp.abs(vel[1, bottom_mask])
+                pos[1, bottom_mask] = y_mins[batch_start + i] + EPSILON
+            
+            # Update arrays only if collisions occurred
+            if cp.any(collision_mask[:n_particles]):
+                positions[:, particle_indices] = pos
+                velocities[:, particle_indices] = vel
+
+
+
+def detect_collisions_simple(particles:Particles.Particles2D, grid:Grid.Grid2D, wall_indices, wall_directions):
+    Nx, Ny = (grid.gridshape[0] - 1, grid.gridshape[1] - 1)
+    dx, dy = grid.cell_size
+
+    valid_cells = cp.isin(particles.active_cells, wall_indices)
+    valid_cells = particles.active_cells[valid_cells]
+
+    if len(valid_cells) == 0:
+        return
+    
+    for cell_idx in valid_cells:
+        print(f"Cell {cell_idx}")
+        cx = cell_idx % Ny
+        cy = cell_idx // Ny
+        x_min = (cx) * dx
+        x_max = (cx + 1) * dx
+        #print(f"Cell {cell_idx}: cx={cx}, cy={cy}, x_min={x_min:.6f}, x_max={x_max:.6f}")
+        y_min = cy * dy
+        y_max = (cy + 1) * dy
+
+        for part_idx in particles.sorted_indices[particles.cell_starts[cell_idx]:particles.cell_starts[cell_idx+1]+1]:
+            # Get particle position and velocity
+            pos = particles.R[:, part_idx]
+            vel = particles.V[:, part_idx]
+            # Get wall mask for this cell
+            wall_mask = wall_directions[cp.where(wall_indices == cell_idx)[0][0]]
+
+            #print(f"Particle {part_idx}: pos={pos}, vel={vel}, wall_mask={wall_mask}")
+            
+            # Check for collisions with walls
+            if wall_mask & 0b0001:  # Left wall
+                if pos[0] < x_min:
+                    print("Left collision")
+                    particles.R[0, part_idx] = x_min + 1e-6
+                    particles.V[0, part_idx] = cp.abs(vel[0])
+
+            if wall_mask & 0b0010:  # Right wall
+                if pos[0] > x_max:
+                    print("Right collision")
+                    particles.R[0, part_idx] = x_max - 1e-6
+                    particles.V[0, part_idx] = -cp.abs(vel[0]) 
+    
+    
 
 def remove_collided_particles(R: cp.ndarray, V: cp.ndarray, part_type: cp.ndarray, collided_indices: cp.ndarray, last_alive: int):
     """

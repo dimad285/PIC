@@ -10,11 +10,13 @@ class SimulationUI_tk:
         # Internal state
         self.state = {
             "simulation_running": False,
+            "simulation_step": False,
             "trace_enabled": False,
             "text_enabled": False,
             "finished": False,
             "plot_type": "particles",
             "plot_variable": "R",
+            "camera distance": 10,
         }
 
         # Plot options and variables
@@ -56,6 +58,16 @@ class SimulationUI_tk:
     def select_plot_variable(self, event):
         """Update the selected plot variable."""
         self.state["plot_variable"] = self.plot_var_selector.get()
+        
+    def simulation_step(self):
+        """Step the simulation."""
+        self.state["simulation_step"] = True
+
+    def get_camera_distance(self):
+        return self.state["camera distance"]
+    
+    def set_camera_distance(self, distance):
+        self.state["camera distance"] = distance
 
     def build_ui(self, root):
         """Build the simulation control UI."""
@@ -65,6 +77,10 @@ class SimulationUI_tk:
         # Start/Stop Button
         self.sim_button = tk.Button(root, text="Start Simulation", command=self.toggle_simulation)
         self.sim_button.pack(pady=10)
+
+        # Step Button
+        self.step_button = tk.Button(root, text="Step Simulation", command=self.simulation_step)
+        self.step_button.pack(pady=5)
 
         # Trace and Text Toggles
         self.trace_var = tk.BooleanVar(value=self.state["trace_enabled"])
@@ -93,6 +109,10 @@ class SimulationUI_tk:
         self.plot_var_selector.set(self.state["plot_variable"])
         self.plot_var_selector.bind("<<ComboboxSelected>>", self.select_plot_variable)
         self.plot_var_selector.pack(pady=5)
+
+        self.cam_dist = tk.Scale(root, from_=1, to=20, orient="horizontal", label="Camera Distance")
+        self.cam_dist.set(self.state["camera distance"])
+        self.cam_dist.pack(pady=5)
 
     def get_state(self):
         """Return the current state as a dictionary."""

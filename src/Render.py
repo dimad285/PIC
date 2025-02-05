@@ -8,7 +8,33 @@ import freetype
 import glm
 from cuda import cudart
 from CuPy_TO_OpenGL import *
+from dataclasses import dataclass, field
+import numpy as np
+from math import radians, cos, sin
 
+@dataclass
+class Camera:
+    fov: float = 45  # Field of view in degrees
+    r: float = 1.0  # Distance from the origin
+    phi: float = 0.0  # Azimuthal angle in radians
+    theta: float = 0.0  # Polar angle in radians
+    x: float = 0.0  # Offset along the X-axis
+    y: float = 0.0  # Offset along the Y-axis
+    z: float = 0.0  # Offset along the Z-axis
+    
+    @property
+    def fov_radians(self) -> float:
+        """Convert field of view to radians."""
+        return radians(self.fov)
+
+    @property
+    def position(self) -> np.ndarray:
+        """Compute the camera position in 3D space."""
+        return np.array([
+            self.r * cos(self.phi) + self.x,
+            self.r * sin(self.phi) + self.y,
+            self.r * sin(self.theta) + self.z
+        ])
 
 # Vertex shader for particles
 PARTICLE_VERTEX_SHADER_2D = """

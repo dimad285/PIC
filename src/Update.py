@@ -5,28 +5,8 @@ import cupy as cp
 def update_R(R, V, X, Y, dt:float, last_alive, part_type):
     R[:, :last_alive] = R[:, :last_alive] + V[:, :last_alive] * dt
 
-    '''
-    mask = (R[0, :last_alive] < 0) | (R[0, :last_alive] > X) | \
-           (R[1, :last_alive] < 0) | (R[1, :last_alive] > Y)
-    to_remove = cp.where(mask)[0]
 
-    # Remove particles flagged by the mask
-    num_to_remove = to_remove.shape[0]
-    if num_to_remove > 0:
-        keep_indices = cp.arange(last_alive)  # Indices of all alive particles
-        keep_indices[to_remove] = keep_indices[last_alive - num_to_remove:last_alive]
-        
-        # Rearrange R, V, and part_type
-        R[:, :last_alive - num_to_remove] = R[:, keep_indices[:last_alive - num_to_remove]]
-        V[:, :last_alive - num_to_remove] = V[:, keep_indices[:last_alive - num_to_remove]]
-        part_type[:last_alive - num_to_remove] = part_type[keep_indices[:last_alive - num_to_remove]]
-
-        last_alive -= num_to_remove
-
-    return last_alive
-    '''
-
-def compute_bilinear_weights(R: cp.ndarray, dx: float, dy: float,
+def compute_bilinear_weights(R: cp.ndarray, cell_size: tuple,
                              gridsize: tuple, last_alive: int, weights: cp.ndarray, indices: cp.ndarray,
                              R_grid: cp.ndarray = None):
     """
@@ -41,7 +21,7 @@ def compute_bilinear_weights(R: cp.ndarray, dx: float, dy: float,
         indices: Array to store cell indices for each particle (4 x last_alive)
     """
     m, n = gridsize
-    
+    dx, dy = cell_size
     # Normalize positions
     x = R[0, :last_alive] / dx
     y = R[1, :last_alive] / dy
@@ -82,13 +62,13 @@ def update_V(V: cp.ndarray, E: cp.ndarray,
     """
     # Get interpolation weights and indices
     #weights, indices = compute_bilinear_weights(R, dx, dy, gridsize, last_alive)
-    
     # Compute interpolated electric field components
     Ex = cp.sum(E[0, indices[:, :last_alive]] * weights[:, :last_alive], axis=0)
     Ey = cp.sum(E[1, indices[:, :last_alive]] * weights[:, :last_alive], axis=0)
     
     # Update velocities
     k = dt * q_type[part_type[:last_alive]] * m_type_1[part_type[:last_alive]]
+    
     V[0, :last_alive] += Ex * k
     V[1, :last_alive] += Ey * k
 
@@ -166,15 +146,6 @@ def update_density_gpu(part_type: cp.ndarray, rho: cp.ndarray,
     """
     rho.fill(0.0)
     
-    # Get interpolation weights and indices
-    #weights, indices = compute_bilinear_weights(R, dx, dy, gridsize, last_alive)
-    
-    # Compute charge density contributions
-    
-    # Apply charge density to grid using weights
-    #for idx, weight in zip(indices[:last_alive], weights[:last_alive]):
-    #    cp.add.at(rho, idx, w * q[part_type[:last_alive]] * weight)
-
     cp.add.at(rho, indices[0, :last_alive], w * q[part_type[:last_alive]] * weights[0, :last_alive])
     cp.add.at(rho, indices[1, :last_alive], w * q[part_type[:last_alive]] * weights[1, :last_alive])
     cp.add.at(rho, indices[2, :last_alive], w * q[part_type[:last_alive]] * weights[2, :last_alive])
@@ -287,108 +258,84 @@ def updateE_gpu(E, phi, x, y, gridsize: tuple):
 def sort_particles_sparse(cell_indices, num_cells):
     """
     Sort particles using a sparse array approach on GPU.
-    Only stores data for non-empty cells.
-    
+    Only stores data for non-empty cells and computes cell shifts.
+   
     Parameters:
     -----------
     cell_indices : cupy.ndarray
         Array of cell indices for each particle
     num_cells : int
         Total number of cells
-        
+       
     Returns:
     --------
     active_cells : cupy.ndarray
         Indices of cells that contain particles
-    cell_counts : cupy.ndarray
-        Number of particles in each active cell
+    cell_starts : cupy.ndarray
+        Starting position for each active cell in the sorted array
     sorted_indices : cupy.ndarray
         Sorted particle indices
     """
     # Get counts for all cells
     full_counts = cp.bincount(cell_indices, minlength=num_cells)
-    
+   
     # Find non-empty cells
     active_cells = cp.nonzero(full_counts)[0]
     cell_counts = full_counts[active_cells]
+   
+    # Compute starting positions for active cells
+    cell_starts = cp.zeros(len(active_cells), dtype=cp.int32)
+    if len(active_cells) > 1:
+        cp.cumsum(cell_counts[:-1], out=cell_starts[1:])
+    
+    # Create a mapping from all cells to active cell positions
+    cell_to_active_map = -cp.ones(num_cells, dtype=cp.int32)
+    cell_to_active_map[active_cells] = cp.arange(len(active_cells))
+    
+    # Temporary positions for atomic updates
+    temp_positions = cp.zeros_like(cell_starts)
     
     # Create array for sorted particle indices
-    sorted_indices = cp.zeros_like(cell_indices)
-    
-    # Initialize current positions for active cells
-    positions = cp.zeros_like(active_cells)
-    cp.cumsum(cell_counts[:-1], out=positions[1:])
-    
+    sorted_indices = cp.zeros(len(cell_indices), dtype=cp.int32)
+   
     # Create a kernel for parallel particle sorting
     sort_kernel = cp.RawKernel(r'''
     extern "C" __global__
     void sort_particles_sparse(const int* cell_indices,
-                             const int* active_cells,
-                             const int* positions,
+                             const int* cell_to_active_map,
+                             const int* cell_positions,
+                             int* temp_positions,
                              int* sorted_indices,
-                             const int num_particles,
-                             const int num_active_cells) {
+                             const int num_particles) {
         int idx = blockDim.x * blockIdx.x + threadIdx.x;
         if (idx < num_particles) {
+            // Map the cell index to the active cell index
             int cell = cell_indices[idx];
-            // Binary search to find position in active_cells
-            int left = 0;
-            int right = num_active_cells - 1;
-            
-            while (left <= right) {
-                int mid = (left + right) / 2;
-                if (active_cells[mid] == cell) {
-                    int pos = positions[mid] + atomicAdd(
-                        (int*)&positions[mid], 1);
-                    sorted_indices[pos] = idx;
-                    break;
-                }
-                else if (active_cells[mid] < cell) {
-                    left = mid + 1;
-                }
-                else {
-                    right = mid - 1;
-                }
+            int active_cell_idx = cell_to_active_map[cell];
+            if (active_cell_idx >= 0) {
+                // Atomically update temp_positions and compute position
+                int pos = atomicAdd(&temp_positions[active_cell_idx], 1);
+                int global_pos = cell_positions[active_cell_idx] + pos;
+                // Assign the particle index to the sorted array
+                sorted_indices[global_pos] = idx;
             }
         }
     }
     ''', 'sort_particles_sparse')
-    
-    # Launch kernel
+       
+    # Kernel execution with error checking
     threads_per_block = 256
     blocks_per_grid = (len(cell_indices) + threads_per_block - 1) // threads_per_block
-    sort_kernel((blocks_per_grid,), (threads_per_block,),
-                (cell_indices, active_cells, positions, sorted_indices, 
-                 len(cell_indices), len(active_cells)))
     
-    return active_cells, cell_counts, sorted_indices
+    try:
+        sort_kernel((blocks_per_grid,), (threads_per_block,),
+                   (cell_indices, cell_to_active_map, cell_starts, temp_positions,
+                    sorted_indices, len(cell_indices)))
+    except Exception as e:
+        raise RuntimeError(f"Kernel execution failed: {str(e)}")
+        
+    return active_cells, cell_starts, sorted_indices
 
-def get_particles_in_cell(cell_id, active_cells, cell_counts, sorted_indices):
-    """
-    Get particles in a specific cell using sparse storage.
-    
-    Parameters:
-    -----------
-    cell_id : int
-        Cell to get particles from
-    active_cells : cupy.ndarray
-        Array of cell indices that contain particles
-    cell_counts : cupy.ndarray
-        Number of particles in each active cell
-    sorted_indices : cupy.ndarray
-        Sorted particle indices
-    
-    Returns:
-    --------
-    cupy.ndarray or None
-        Particle indices in the requested cell, or None if cell is empty
-    """
-    # Binary search for cell_id in active_cells
-    idx = cp.searchsorted(active_cells, cell_id)
-    if idx < len(active_cells) and active_cells[idx] == cell_id:
-        start = cp.sum(cell_counts[:idx]) if idx > 0 else 0
-        return sorted_indices[start:start + cell_counts[idx]]
-    return None
 
 def sort_particles_dict(cell_indices):
     """
@@ -506,31 +453,85 @@ def check_gauss_law_2d(E, rho, epsilon_0, dx, dy, nx, ny):
     Check Gauss's law for a 2D grid using cupy arrays.
     
     Parameters:
-    E (cupy.ndarray): Electric field with shape (2, nx*ny)
-    rho (cupy.ndarray): Charge density with shape (nx*ny)
-    epsilon_0 (float): Permittivity of free space
-    dx, dy (float): Grid spacing in x and y directions
-    nx, ny (int): Number of grid points in x and y directions
+    E (cupy.ndarray): Electric field with shape (2, nx*ny), E[0] is Ex and E[1] is Ey.
+    rho (cupy.ndarray): Charge density with shape (nx*ny).
+    epsilon_0 (float): Permittivity of free space.
+    dx, dy (float): Grid spacing in x and y directions.
+    nx, ny (int): Number of grid points in x and y directions.
     
     Returns:
     tuple: line_integral, area_integral, relative_error
     """
-    # Reshape E and rho to 2D grid
+    # Reshape E and rho to 2D grids
     Ex = E[0].reshape(nx, ny)
     Ey = E[1].reshape(nx, ny)
     rho_2d = rho.reshape(nx, ny)
     
-    # Compute line integral of E field
+    # Compute line integral of the electric field (flux through boundaries)
     line_integral = (
-        cp.sum(Ex[0, :] - Ex[-1, :]) * dy +
-        cp.sum(Ey[:, 0] - Ey[:, -1]) * dx
+        cp.sum(Ex[0, :]) * dy - cp.sum(Ex[-1, :]) * dy +  # Top and bottom boundaries
+        cp.sum(Ey[:, -1]) * dx - cp.sum(Ey[:, 0]) * dx    # Right and left boundaries
     )
     
-    # Compute area integral of charge density
+    # Compute area integral of charge density (total charge divided by epsilon_0)
     total_charge = cp.sum(rho_2d) * dx * dy
     area_integral = total_charge / epsilon_0
     
-    # Compute relative error
-    relative_error = abs(line_integral - area_integral) / area_integral
+    # Compute relative error, handle zero area_integral
+    if abs(area_integral) > 1e-12:  # Avoid division by near-zero values
+        relative_error = abs(line_integral - area_integral) / abs(area_integral)
+    else:
+        relative_error = float('inf')  # Undefined error if area_integral is zero
     
     return line_integral, area_integral, relative_error
+
+
+
+def compute_divergence_error(E, rho, epsilon_0, dx, dy, nx, ny):
+    """
+    Compute the norm of the error between divergence of E and rho / epsilon_0,
+    and the surface integral of the divergence over the domain.
+    
+    Parameters:
+    E (cupy.ndarray): Electric field with shape (2, nx*ny), E[0] is Ex and E[1] is Ey.
+    rho (cupy.ndarray): Charge density with shape (nx*ny).
+    epsilon_0 (float): Permittivity of free space.
+    dx, dy (float): Grid spacing in x and y directions.
+    nx, ny (int): Number of grid points in x and y directions.
+    
+    Returns:
+    tuple: (error_norm, surface_integral, boundary_flux)
+        - error_norm (float): L2 norm of the error.
+        - surface_integral (float): Integral of divergence of E over the domain.
+        - boundary_flux (float): Line integral of E field over the domain boundary.
+    """
+    # Reshape E and rho to 2D grids
+    Ex = E[0].reshape(nx, ny)
+    Ey = E[1].reshape(nx, ny)
+    rho_2d = rho.reshape(nx, ny)
+    
+    # Compute divergence of E
+    divE = cp.zeros((nx, ny), dtype=cp.float32)
+    
+    # Central differences for interior points
+    divE[1:-1, 1:-1] = (
+        (Ex[2:, 1:-1] - Ex[:-2, 1:-1]) / (2 * dx) + 
+        (Ey[1:-1, 2:] - Ey[1:-1, :-2]) / (2 * dy)
+    )
+    
+    # One-sided differences for boundaries
+    divE[0, :] = (Ex[1, :] - Ex[0, :]) / dx  # Bottom
+    divE[-1, :] = (Ex[-1, :] - Ex[-2, :]) / dx  # Top
+    divE[:, 0] = (Ey[:, 1] - Ey[:, 0]) / dy  # Left
+    divE[:, -1] = (Ey[:, -1] - Ey[:, -2]) / dy  # Right
+    
+    # Compute the error
+    error = divE - rho_2d / epsilon_0
+    
+    # Compute the L2 norm of the error
+    error_norm = cp.sqrt(cp.sum(error**2))
+    
+    # Compute the surface integral of divergence
+    surface_integral = cp.sum(divE) * dx * dy
+    
+    return error_norm, surface_integral
