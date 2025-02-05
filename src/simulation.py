@@ -67,7 +67,7 @@ def step(particles:Particles.Particles2D, grid:Grid.Grid2D, dt, solver:Solvers.S
 def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, grid:Grid.Grid2D,
         camera, frame_time, sim_time, dt, 
         diagnostics:Diagnostics,
-        SCREEN_SIZE, boundary=None, bound_tuple=None):
+        SCREEN_SIZE, bound_tuple=None):
     
     def line_plot(renderer:Render.PICRenderer, data_x, data_y, SCREEN_SIZE, plot_type):
         renderer.renderer_type = "line_plot"
@@ -92,7 +92,7 @@ def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, gr
             match plot_var_name:
                 case "R":
                     renderer.update_particles(particles.R, 0, X, 0, Y)
-                    if boundary != None:
+                    if bound_tuple != None:
                         renderer.update_boundaries(bound_tuple, (m, n))
                 case "V":
                     renderer.update_particles(particles.V)
