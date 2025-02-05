@@ -109,24 +109,27 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
 
 
 
-config = parse_config('c:/Users/Dima/Desktop/Proga/Cuda/input.ini')
-# Use parsed parameters
-CPU = False
-GPU = True
-m = config['m']
-n = config['n']
-k = config['k']
-max_particles = config['max_particles']
-dt = config['dt']
-X = config['X']
-Y = config['Y']
-Z = config['Z']
-boundarys = config['boundarys']
 
-solver_type = 'gmres'
 
 if __name__ == "__main__":
     
+
+    config = parse_config('c:/Users/Dima/Desktop/Proga/Cuda/input.ini')
+    # Use parsed parameters
+    CPU = False
+    GPU = True
+    m = config['m']
+    n = config['n']
+    k = config['k']
+    max_particles = config['max_particles']
+    dt = config['dt']
+    X = config['X']
+    Y = config['Y']
+    Z = config['Z']
+    boundarys = config['boundarys']
+
+    solver_type = 'gmres'
+
     pr = cProfile.Profile()
     pr.enable()
     
