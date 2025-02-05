@@ -96,10 +96,10 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
 
             frame_time = time.perf_counter() - start_time
 
-            if RENDER:
-                if renderer.should_close():
-                    break
-                framecounter = 0
+            
+            if renderer.should_close():
+                break
+            framecounter = 0
 
     if RENDER:
         renderer.close()
