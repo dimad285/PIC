@@ -32,7 +32,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
     diagnostics = simulation.Diagnostics()
     if boundary != None:
         boundaries = Boundaries.Boundaries(boundary, grid)
-    solver = Solvers.Solver(solver_type, grid, boundaries)
+    solver = Solvers.Solver(solver_type, grid, ([0, 0], [0, 0]))
         
     if UI:
         root = tk.Tk()

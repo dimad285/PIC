@@ -54,13 +54,13 @@ def init_simulation(m, n, X, Y, N, dt, species):
 def step(particles:Particles.Particles2D, grid:Grid.Grid2D, dt, solver:Solvers.Solver, walls=None):
 
     particles.update_R(dt)
-    collisions.detect_collisions_simple(particles, grid, *walls)
+    #collisions.detect_collisions_simple(particles, grid, *walls)
     particles.update_bilinear_weights(grid)
-    particles.sort_particles_sparse(grid.cell_count)
-    grid.update_density(particles)
-    solver.solve(grid)
-    grid.update_E()
-    particles.update_V(grid, dt)
+    #particles.sort_particles_sparse(grid.cell_count)
+    #grid.update_density(particles)
+    #solver.solve(grid)
+    #grid.update_E()
+    #particles.update_V(grid, dt)
 
 
 
