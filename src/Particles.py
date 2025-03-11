@@ -188,7 +188,8 @@ class Particles2D():
         la = self.last_alive
         self.R[0, la] = cp.random.uniform(x - dx * 0.5, x + dx * 0.5)
         self.R[1, la] = cp.random.uniform(y - dy * 0.5, y + dy * 0.5)
-        self.V[:, la] = 0
+        self.V[0, la] = cp.random.uniform(-0.1, 0.1)
+        self.V[1, la] = cp.random.uniform(-0.1, 0.1)
         self.part_type[la] = cp.random.randint(1, 3)
         self.last_alive += 1
 
@@ -196,7 +197,8 @@ class Particles2D():
         la = self.last_alive
         self.R[0, la:la + n] = cp.random.uniform(x - dx * 0.5, x + dx * 0.5, n)
         self.R[1, la:la + n] = cp.random.uniform(y - dy * 0.5, y + dy * 0.5, n)
-        self.V[:, la:la + n] = 0
+        self.V[0, la] = cp.random.uniform(-0.1, 0.1)
+        self.V[1, la] = cp.random.uniform(-0.1, 0.1)
         self.part_type[la:la + n] = cp.random.randint(1, 3, n)
         self.last_alive += n
 
@@ -204,6 +206,7 @@ class Particles2D():
         la = self.last_alive
         self.R[0, la:la + n] = cp.random.uniform(x - dx * 0.5, x + dx * 0.5, n)
         self.R[1, la:la + n] = cp.random.uniform(y - dy * 0.5, y + dy * 0.5, n)
-        self.V[:, la:la + n] = 0
+        self.V[0, la] = cp.random.uniform(-0.1, 0.1)
+        self.V[1, la] = cp.random.uniform(-0.1, 0.1)
         self.part_type[la:la + n] = self.part_name.index(species)
         self.last_alive += n

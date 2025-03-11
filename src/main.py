@@ -32,7 +32,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
     diagnostics = simulation.Diagnostics()
     if boundary != None:
         boundaries = Boundaries.Boundaries(boundary, grid)
-    solver = Solvers.Solver(solver_type, grid, ([0, 0], [0, 0]))
+    solver = Solvers.Solver(solver_type, grid, boundaries.conditions)
         
     if UI:
         root = tk.Tk()
@@ -43,7 +43,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
         #window = surf.initialize_window()
         
     # MAIN LOOP
-    el_k = 1
+    el_k = 1000
     particles.uniform_species_load(X * 0.25, Y * 0.25, X/(m-1), Y/(n-1), el_k, 'electron')
     particles.update_bilinear_weights(grid)
     particles.sort_particles_sparse(grid.cell_count)
@@ -67,7 +67,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
                 state["simulation_step"] = False
 
 
-        if not RENDER and framecounter == 100:
+        if not RENDER and framecounter == 1:
             framecounter = 0
             print(f"t = {t:.2e}, sim_time = {sim_time:.2e}")
 

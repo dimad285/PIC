@@ -354,7 +354,7 @@ class PICRenderer:
         #version 330
         out vec4 fragColor;
         void main() {
-            fragColor = vec4(1.0, 1.0, 1.0, 1.0);
+            fragColor = vec4(0.0, 1.0, 0.0, 1.0);
         }
         """
 
@@ -975,8 +975,8 @@ class PICRenderer:
                 glEnable(GL_DEPTH_TEST)
                 # Set projection and view matrices for 3D
                 self.render_particles_3d(fov=self.fov, camera_position=self.eye, target=(0.0, 0.0, 0.0))
-                
-            self.render_particles()
+            else:
+                self.render_particles()
             if GRID_RENDERING:
                 pass
             if BOUNDARY_RENDERING:

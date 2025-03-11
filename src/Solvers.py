@@ -504,6 +504,7 @@ class Solver():
         self.cyilindrical = grid.cylindrical
 
         self.boundaries = boundaries
+        print(self.boundaries)
 
         self.init_solver()
 
