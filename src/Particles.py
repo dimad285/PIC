@@ -13,14 +13,24 @@ class Particles2D():
         self.last_alive = 0 # index of last alive particle
         # Problems can be with particle sorting
         self.part_name = ['', 'proton', 'electron']
-        self.m_type = cp.array([0, Consts.mp, Consts.me], dtype=cp.float64)
-        self.m_type_inv = cp.array([0, 1/Consts.mp, 1/Consts.me], dtype=cp.float64)
-        self.q_type = cp.array([0, 1.0 * Consts.qe, -1.0 * Consts.qe], dtype=cp.float64)
+        self.m_type = cp.array([0, Consts.mp, Consts.me], dtype=cp.float32)
+        self.m_type_inv = cp.array([0, 1/Consts.mp, 1/Consts.me], dtype=cp.float32)
+        self.q_type = cp.array([0, 1.0 * Consts.qe, -1.0 * Consts.qe], dtype=cp.float32)
         self.weights = cp.zeros((4, N), dtype=cp.float32)
         self.indices = cp.zeros((4, N), dtype=cp.int32)
         self.active_cells = None
         self.cell_starts = None
         self.sorted_indices = None
+
+        self.cross_sectiond = [None]
+
+        self.species_count = []
+        self.total_count = 0
+
+        self.min_vx = 0
+        self.max_vx = 0
+        self.min_vy = 0
+        self.max_vy = 0
 
     
     @property

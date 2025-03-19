@@ -458,3 +458,45 @@ def remove_collided_particles(R: cp.ndarray, V: cp.ndarray, part_type: cp.ndarra
         part_type[idx_scalar] = part_type[new_last_alive]
     
     return new_last_alive
+
+
+
+def remove_out_of_bounds(particles:Particles.Particles2D, X_max, Y_max):
+    """
+    Remove particles that are out of bounds by swapping with the last active particle
+    and decreasing the active particle counter.
+
+    Parameters:
+    - particles: object containing particle data (positions, velocities, etc.).
+      Assumes positions are stored as `particles.pos` with shape (2, n).
+    - X_max, Y_max: domain size in x and y directions.
+
+    Returns:
+    - Updated particle count.
+    """
+    pos = particles.R  # Shape (2, n)
+    count = particles.last_alive  # Last active particle index
+    
+    # Find out-of-bounds particles
+    out_of_bounds = (pos[0, :count] < 0) | (pos[0, :count] > X_max) | \
+                    (pos[1, :count] < 0) | (pos[1, :count] > Y_max)
+
+    indices_to_remove = cp.where(out_of_bounds)[0]
+    num_to_remove = indices_to_remove.size
+
+    if num_to_remove > 0:
+        # Get indices of last N active particles
+        swap_indices = cp.arange(count - num_to_remove, count)
+
+        # Ensure we don’t swap the same indices (if num_to_remove == count, it breaks)
+        valid_swaps = swap_indices[swap_indices >= 0]
+
+        # Swap positions
+        pos[:, indices_to_remove[:valid_swaps.size]] = pos[:, valid_swaps]
+        particles.V[:, indices_to_remove[:valid_swaps.size]] = particles.V[:, valid_swaps]
+        particles.part_type[indices_to_remove[:valid_swaps.size]] = particles.part_type[valid_swaps]
+
+        # Decrease count
+        count -= num_to_remove
+
+    particles.last_alive = count  # Update active particle count

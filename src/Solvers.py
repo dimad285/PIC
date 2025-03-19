@@ -589,6 +589,14 @@ class Solver():
                 phi = Solvers.solve_poisson_pcg_gpu(rho, m, n, dx, dy, Consts.eps0, phi0=phi_tmp.flatten(), max_iter=10)
                 '''
             case 'gmres':
+                assert not cp.any(cp.isnan(grid.rho)), "grid.rho contains NaN"
+                assert not cp.any(cp.isinf(grid.rho)), "grid.rho contains Inf"
+
+                assert not cp.any(cp.isnan(grid.b)), "grid.b contains NaN"
+                assert not cp.any(cp.isinf(grid.b)), "grid.b contains Inf"
+                
+                assert not cp.any(cp.isnan(grid.phi)), "grid.phi contains NaN"
+                assert not cp.any(cp.isinf(grid.phi)), "grid.phi contains Inf"
                 grid.phi[:], iter = gmres(self.Lap, grid.b, x0=grid.phi, tol=1e-2)
             case None:
                 pass

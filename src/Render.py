@@ -335,26 +335,38 @@ class PICRenderer:
         particle_vertex_shader = """
         #version 330
         in vec3 position;
+        in float type;
+        out float vParticleType;  
         uniform mat4 projection;
         uniform mat4 modelView;
         void main() {
             gl_Position = projection * modelView * vec4(position, 1.0);
+            vParticleType = type;
         }
         """ if is_3d else """
         #version 330
         in vec2 position;
+        in float type;  
+        out float vParticleType;  
         uniform mat4 projection;
         uniform mat4 modelView;
         void main() {
             gl_Position = projection * modelView * vec4(position, 0.0, 1.0);
+            vParticleType = type; 
         }
         """
 
         particle_fragment_shader = """
         #version 330
+        in float vParticleType; 
         out vec4 fragColor;
+
         void main() {
-            fragColor = vec4(0.0, 1.0, 0.0, 1.0);
+            //if (vParticleType < 0.0) fragColor = vec4(0.0, 0.0, 0.0, 1.0);  
+            if (vParticleType == 1.0) fragColor = vec4(0.0, 1.0, 0.0, 1.0);  
+            else if (vParticleType == 2.0) fragColor = vec4(1.0, 0.5, 0.0, 1.0);  
+            else if (vParticleType == 3.0) fragColor = vec4(1.0, 1.0, 0.0, 1.0);  
+            else fragColor = vec4(1.0, 1.0, 1.0, 1.0);  
         }
         """
 
@@ -367,7 +379,7 @@ class PICRenderer:
         self.modelview_loc = glGetUniformLocation(self.particle_shader_program, "modelView")
 
         # Initialize particle buffer with CUDA/OpenGL interop
-        particle_vertex_size = 3 if is_3d else 2
+        particle_vertex_size = 4 if is_3d else 3
         
         self.particle_vertex_size = particle_vertex_size
         
@@ -510,25 +522,31 @@ class PICRenderer:
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
 
-    def update_particles(self, particle_positions, x_min, x_max, y_min, y_max):
+    def update_particles(self, particle_positions, particle_types:cp.ndarray, x_min, x_max, y_min, y_max):
         """
-        Update particle positions on the GPU using CuPy.
-
-        :param particle_positions: CuPy array of shape (2, n) for 2D positions or (3, n) for 3D positions.
+        Update particle positions and types on the GPU using CuPy.
+        
+        :param particle_positions: CuPy array of shape (2, n) for positions
+        :param particle_types: CuPy array of shape (n,) for particle types
         """
         num_particles = particle_positions.shape[1]
         assert num_particles <= self.particle_count, (
             f"Number of particles ({num_particles}) exceeds buffer size ({self.particle_count})."
         )
-        assert particle_positions.shape[0] == self.particle_vertex_size, (
-            f"Particle positions must have {self.particle_vertex_size} dimensions."
-        )
-
-        # Normalize particle positions from simulation space [0, 1] to OpenGL space [-1, 1]
-        normalized_positions = 2.0 * (particle_positions - x_min) / (x_max - x_min) - 1.0 
-
+        
+        # Normalize particle positions to OpenGL space [-1, 1]
+        normalized_positions = 2.0 * (particle_positions - x_min) / (x_max - x_min) - 1.0
+        
+        # Create interleaved data with position and type
+        interleaved_data = cp.zeros((num_particles, self.particle_vertex_size), dtype=cp.float32)
+        #print(normalized_positions.T.shape, interleaved_data[:, :self.particle_vertex_size].shape)
+        interleaved_data[:, :self.particle_vertex_size-1] = normalized_positions.T
+        interleaved_data[:, self.particle_vertex_size-1] = particle_types.astype(cp.float32)
+        #print(particle_types)
+        
         with self.particle_buffer as particle_data:
-            particle_data[:num_particles, :] = normalized_positions.T
+            #print(interleaved_data.shape, particle_data[:num_particles].shape)
+            particle_data[:num_particles] = interleaved_data[:, :3]
 
 
 
@@ -798,13 +816,24 @@ class PICRenderer:
         
         # Bind particle buffer
         glBindBuffer(GL_ARRAY_BUFFER, self.particle_vbo)
-        
+    
+        # Position attribute
         position_attrib = glGetAttribLocation(self.particle_shader_program, "position")
         glEnableVertexAttribArray(position_attrib)
-        glVertexAttribPointer(position_attrib, self.particle_vertex_size, GL_FLOAT, GL_FALSE, 0, None)
+        stride = (self.particle_vertex_size) * np.float32().nbytes  # Position + type
+        #print(stride.shape)
+        glVertexAttribPointer(position_attrib, self.particle_vertex_size, GL_FLOAT, GL_FALSE, stride, None)
+        
+        # Type attribute
+        type_attrib = glGetAttribLocation(self.particle_shader_program, "type")
+        glEnableVertexAttribArray(type_attrib)
+        offset = (self.particle_vertex_size-1) * np.float32().nbytes
+        glVertexAttribPointer(type_attrib, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(offset))
         
         glDrawArrays(GL_POINTS, 0, self.particle_count)
-
+        
+        glDisableVertexAttribArray(position_attrib)
+        glDisableVertexAttribArray(type_attrib)
         glBindBuffer(GL_ARRAY_BUFFER, 0)
 
 

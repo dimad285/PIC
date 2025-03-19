@@ -6,6 +6,7 @@ import Solvers
 import Render
 import Particles
 import Grid
+import MCC
 
 
 class Boundaries():
@@ -30,7 +31,9 @@ class Diagnostics():
         return total_potential_energy
     
     def total_momentum(self, particles:Particles.Particles2D):
-        return cp.sum(cp.hypot(particles.V[0, :particles.last_alive], particles.V[1, :particles.last_alive]) * particles.m_type[particles.part_type[:particles.last_alive]])
+        Px = cp.sum(particles.V[0, :particles.last_alive] * particles.m_type[particles.part_type[:particles.last_alive]])
+        Py = cp.sum(particles.V[1, :particles.last_alive] * particles.m_type[particles.part_type[:particles.last_alive]])
+        return cp.hypot(Px, Py)
 
     def update(self, t, particles, grid, sim_time):
 
@@ -51,9 +54,10 @@ def init_simulation(m, n, X, Y, N, dt, species):
 
 
 
-def step(particles:Particles.Particles2D, grid:Grid.Grid2D, dt, solver:Solvers.Solver, walls=None):
+def step(particles:Particles.Particles2D, grid:Grid.Grid2D, dt, solver:Solvers.Solver, cross_sections, MAX_PARICLES, walls=None):
 
     particles.update_R(dt)
+    collisions.remove_out_of_bounds(particles, grid.X, grid.Y)
     #print(particles.last_alive)
     #collisions.detect_collisions_simple(particles, grid, *walls)
     particles.update_bilinear_weights(grid)
@@ -62,7 +66,14 @@ def step(particles:Particles.Particles2D, grid:Grid.Grid2D, dt, solver:Solvers.S
     solver.solve(grid)
     grid.update_E()
     particles.update_V(grid, dt)
-
+    MCC.null_collision_method(particles, grid, 1e19, cross_sections, dt, MAX_PARICLES)
+    #print(particles.R[:, :particles.last_alive])
+    '''
+    try:
+        MCC.null_collision_method(particles, 1e19, cross_sections, dt, MAX_PARICLES)
+    except(ValueError):
+        print('mcc error', particles.last_alive)
+    '''
 
 
 def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, grid:Grid.Grid2D,
@@ -92,15 +103,19 @@ def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, gr
             renderer.renderer_type = "particles"
             match plot_var_name:
                 case "R":
-                    renderer.update_particles(particles.R, 0, X, 0, Y)
+                    renderer.update_particles(particles.R, particles.part_type, 0, X, 0, Y)
                     if bound_tuple != None:
                         renderer.update_boundaries(bound_tuple, (m, n))
                 case "V":
-                    renderer.update_particles(particles.V)
+                    renderer.update_particles(particles.V, particles.part_type, cp.min(particles.V[0]), cp.max(particles.V[0]), cp.min(particles.V[1]), cp.max(particles.V[1]))
         
         case "heatmap":
             renderer.renderer_type = "heatmap"
-            renderer.update_heatmap(grid.phi, m, n)
+            match plot_var_name:
+                case "phi":
+                    renderer.update_heatmap(grid.phi, m, n)
+                case "rho":
+                    renderer.update_heatmap(grid.rho, m, n)
                     
         case "line_plot":
             match plot_var_name:
@@ -160,7 +175,8 @@ def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, gr
         renderer.update_legend('frame', f"Frame time: {(frame_time)*1e6:.1f} mks", 110)
         renderer.update_legend('n', f"N: {particles.last_alive}", 140)
         renderer.update_legend('dt', f"dt: {dt:.2e}", 200)
-        renderer.label_list.extend(['sim', 'frame', 'n', 'dt'])
+        renderer.update_legend('flytime', f"min flytime {(grid.dx / cp.max(cp.linalg.norm(particles.V))):.2e}", 230)
+        renderer.label_list.extend(['sim', 'frame', 'n', 'dt', 'flytime'])
 
     renderer.render(clear = not state['trace_enabled'], TEXT_RENDERING=state['text_enabled'], BOUNDARY_RENDERING = True)
 

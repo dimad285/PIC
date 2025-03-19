@@ -26,6 +26,7 @@ class Grid2D():
         self.J = cp.zeros((2, m*n))
         self.A = cp.zeros((2, m*n))
         self.B = cp.zeros((2, m*n))
+        self.NGD = cp.ones(m*n)
 
     def update_E(self):
         # Reshape phi into a 2D grid using Fortran-order for better y-direction performance

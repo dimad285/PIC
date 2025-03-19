@@ -11,7 +11,7 @@ import io
 import Boundaries
 import Particles
 import Grid
-
+import MCC
 
 
 def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt = 0.001, grid_type='2d',
@@ -24,6 +24,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
     t = 0
     sim_time = 0
     frame_time = 0
+    step = 0
 
     # INIT
     print('creating arrays...')
@@ -42,11 +43,17 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
         camera = Render.Camera()
         #window = surf.initialize_window()
         
+    cross_section_elastic = MCC.read_cross_section('csf/Ar.txt')
+    cross_section_ion = MCC.read_cross_section('csf/Ar+.txt')
+    cross_sections = [cross_section_elastic, cross_section_ion]
+    
     # MAIN LOOP
     el_k = 1000
     particles.uniform_species_load(X * 0.25, Y * 0.25, X/(m-1), Y/(n-1), el_k, 'electron')
+    #particles.uniform_species_load(X * 0.25, Y * 0.25, X/(m-1), Y/(n-1), el_k, 'proton')
     particles.update_bilinear_weights(grid)
     particles.sort_particles_sparse(grid.cell_count)
+    #print(particles.part_type[:particles.last_alive])
 
     print('running...')
     while True:
@@ -59,10 +66,13 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
         
         if state["simulation_running"] or state["simulation_step"]:
             # UPDATE
-            simulation.step(particles, grid, dt, solver, boundaries.walls)
+            simulation.step(particles, grid, dt, solver, cross_sections, max_particles, boundaries.walls)
             diagnostics.update(t, particles, grid, sim_time)
             t += dt
-            sim_time = time.perf_counter() - start_time
+            if step < 3000:
+                sim_time = 0
+            else:
+                sim_time = time.perf_counter() - start_time
             if state["simulation_step"]:
                 state["simulation_step"] = False
 
@@ -85,6 +95,8 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
             if renderer.should_close():
                 break
             framecounter = 0
+
+            step += 1
 
     if RENDER:
         renderer.close()
