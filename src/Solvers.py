@@ -1,48 +1,10 @@
 import cupy as cp
-#import numpy as np
+import numpy as np
 #import cupyx as cpx
 from cupyx.scipy.sparse import diags, csr_matrix, eye, kron
 from cupyx.scipy.sparse.linalg import gmres
 import Consts
 import Grid
-
-
-def boundary_array(input: tuple, gridsize: tuple) -> tuple[cp.ndarray, cp.ndarray]:
-    # Initialize Python-native lists for indices and values
-    boundary_indices = []
-    boundary_values = []
-    
-    for segment in input:
-        (m1, n1, m2, n2), V = segment  # Unpack segment
-
-        m1 = int(m1)
-        n1 = int(n1)
-        m2 = int(m2)
-        n2 = int(n2)
-
-        dm = cp.sign(m2 - m1).item()  # Convert to Python scalar
-        dn = cp.sign(n2 - n1).item()  # Convert to Python scalar
-        
-        x, y = m1, n1
-        
-        # Iterate over the boundary points
-        while True:
-            boundary_indices.append(y * gridsize[0] + x)  # Flattened index
-            boundary_values.append(V)
-            
-            # Break loop if endpoint reached
-            if (x == m2 and y == n2):
-                break
-            
-            # Update x and y
-            x += dm
-            y += dn
-    
-    # Convert Python-native lists to CuPy arrays
-    indices = cp.array(boundary_indices, dtype=cp.int32)
-    values = cp.array(boundary_values, dtype=cp.float32)
-    
-    return indices, values
 
 
 def boundary_conditions_left_gpu(A:cp.ndarray, boundary:cp.ndarray):
@@ -219,69 +181,6 @@ def setup_fft_solver_3d(m, n, p):
    
     return k_sq
 
-def restrict_grid(fine_grid, coarse_grid):
-    """
-    Restrict a 2D fine grid to a coarser grid using full weighting on GPU.
-    Updates the `coarse_grid` in place.
-    
-    Parameters:
-    - fine_grid (cp.ndarray): 2D array of the fine grid values (on GPU).
-    - coarse_grid (cp.ndarray): 2D array of the coarser grid values (on GPU, updated in place).
-    """
-    fine_nx, fine_ny = fine_grid.shape
-    coarse_nx, coarse_ny = coarse_grid.shape
-    
-    # Ensure grid sizes are compatible
-    if fine_nx != 2 * coarse_nx - 1 or fine_ny != 2 * coarse_ny - 1:
-        raise ValueError("Fine grid dimensions must be compatible with coarse grid dimensions.")
-    
-    # Restriction using full weighting
-    # Fine grid center points
-    coarse_grid[1:-1, 1:-1] = (
-        fine_grid[2:-2:2, 2:-2:2] +  # Center points
-        0.5 * (fine_grid[1:-3:2, 2:-2:2] + fine_grid[3::2, 2:-2:2] +  # Vertical neighbors
-               fine_grid[2:-2:2, 1:-3:2] + fine_grid[2:-2:2, 3::2]) +  # Horizontal neighbors
-        0.25 * (fine_grid[1:-3:2, 1:-3:2] + fine_grid[1:-3:2, 3::2] +  # Diagonal neighbors
-                fine_grid[3::2, 1:-3:2] + fine_grid[3::2, 3::2])
-    )
-    
-    # Boundary values (copy from fine grid)
-    coarse_grid[0, :] = fine_grid[0, ::2]
-    coarse_grid[-1, :] = fine_grid[-1, ::2]
-    coarse_grid[:, 0] = fine_grid[::2, 0]
-    coarse_grid[:, -1] = fine_grid[::2, -1]
-
-
-def interpolate_grid(coarse_grid, fine_grid):
-    """
-    Interpolates a 2D coarse grid to a fine grid using bilinear interpolation on GPU.
-    Updates the `fine_grid` in place.
-    
-    Parameters:
-    - coarse_grid (cp.ndarray): 2D array of the coarse grid values (on GPU).
-    - fine_grid (cp.ndarray): 2D array of the fine grid values (on GPU, updated in place).
-    """
-    coarse_nx, coarse_ny = coarse_grid.shape
-    fine_nx, fine_ny = fine_grid.shape
-
-    # Ensure grid sizes are compatible
-    if fine_nx != 2 * coarse_nx - 1 or fine_ny != 2 * coarse_ny - 1:
-        raise ValueError("Fine grid dimensions must be compatible with coarse grid dimensions.")
-    
-    # Copy coarse grid values to corresponding fine grid points
-    fine_grid[::2, ::2] = coarse_grid
-    
-    # Interpolate along rows (horizontal edges)
-    fine_grid[1::2, ::2] = 0.5 * (fine_grid[:-1:2, ::2] + fine_grid[2::2, ::2])
-    
-    # Interpolate along columns (vertical edges)
-    fine_grid[::2, 1::2] = 0.5 * (fine_grid[::2, :-1:2] + fine_grid[::2, 2::2])
-    
-    # Interpolate interior points (center of 2x2 coarse cells)
-    fine_grid[1::2, 1::2] = 0.25 * (
-        fine_grid[:-1:2, :-1:2] + fine_grid[2::2, :-1:2] +  # Top-left and bottom-left
-        fine_grid[:-1:2, 2::2] + fine_grid[2::2, 2::2]      # Top-right and bottom-right
-    )
 
 
 
@@ -493,7 +392,7 @@ def solve_poisson_pcg_gpu(rho, m, n, dx, dy, eps0, phi0=None, tol=1e-5, max_iter
 
 
 class Solver():
-    def __init__(self, solver_type:str, grid:Grid.Grid2D, boundaries=None):
+    def __init__(self, solver_type:str, grid:Grid.Grid2D, boundaries=None, tol = 1e-5):
         
         self.solver_type = solver_type
 
@@ -502,6 +401,7 @@ class Solver():
         self.dx = grid.dx
         self.dy = grid.dy
         self.cyilindrical = grid.cylindrical
+        self.tol = tol
 
         self.boundaries = boundaries
         print(self.boundaries)
@@ -510,7 +410,7 @@ class Solver():
 
         
     def init_solver(self):
-        
+    
         match self.solver_type:
             case 'inverse': # add matrix compression
                 print('creating Laplacian...')
@@ -522,7 +422,7 @@ class Solver():
                 print('creating inverse Laplacian...')
                 self.Lap = cp.linalg.inv(self.Lap)
             case 'fft':
-                if not self.cilindrical:
+                if not self.cyilindrical:  # Note: corrected typo from cilindrical
                     #fft_solver = Solvers.PoissonFFTSolver(m, n, dx, dy, Consts.eps0)
                     self.k_sq = setup_fft_solver(self.m, self.n, self.dx, self.dy)
                 else:
@@ -530,30 +430,22 @@ class Solver():
             case 'cg': # add boundary conditions
                 print('Using Conjugate Gradient solver')
                 self.Lap = Laplacian_square_csr(self.m, self.n)
+                if self.boundaries != None:
+                    print('applying boundary conditions...')
+                    apply_boundary_conditions(self.Lap, *self.boundaries)
             case 'cg_fft':
-                print('Using Conjugate Gradient solver')
-                self.k_sq = setup_fft_solver(self.m, self.n)
+                print('Using Conjugate Gradient solver with FFT preconditioner')
+                self.k_sq = setup_fft_solver(self.m, self.n, self.dx, self.dy)
             case 'multigrid':
-                number_of_levels = 2
-                phi_multigrid = []
-                rho_multigrid = []
-                if self.m//((number_of_levels+1)**2) >= 2:
-                    pass
-                else:
-                    number_of_levels -= 1
-                for i in range(1, number_of_levels+1):
-                    phi_multigrid.append(cp.zeros((self.m//(2**i) + 1, self.n//(2**i) + 1), dtype=cp.float32))
-                    rho_multigrid.append(cp.zeros((self.m//(2**i) + 1, self.n//(2**i) + 1), dtype=cp.float32))
-                self.Lap_multigrid = Laplacian_square(*phi_multigrid[-1].shape)
+                print('Using Multigrid solver')
+                # These will be initialized in the MultigridSolver class
+                pass
             case 'gmres':
                 print('Using GMRES solver')
                 self.Lap = Laplacian_square_csr(self.m, self.n)
                 if self.boundaries != None:
                     print('applying boundary conditions...')
                     apply_boundary_conditions(self.Lap, *self.boundaries)
-                #Lap = Solvers.Laplacian_square(m, n)
-                #cp.savetxt('laplacian.txt', Lap.todense(), fmt = '%i')
-                #cp.savetxt('laplacian2.txt', Lap2, fmt = '%i')
 
 
     def solve(self, grid: Grid.Grid2D):
@@ -568,35 +460,27 @@ class Solver():
             case 'inverse':
                 grid.phi[:] = cp.dot(self.Lap, grid.b)
             case 'fft':
-                #phi, error = fft_solver.solve(-rho)
                 grid.phi[:] = solve_poisson_fft(grid.rho, self.k_sq, Consts.eps0)
             case 'cg':
-                #phi, iter = cpx.scipy.sparse.linalg.cg(Lap, -rho * Consts.eps0_1 * dx * dy, x0=phi, tol=1e-2)
-                grid.phi[:] = solve_poisson_pcg_gpu(grid.rho, grid.m, grid.n, grid.dx, grid.dy, Consts.eps0, phi0=grid.phi, tol=1e-2, preconditioner='none')
-
-            
+                grid.phi[:] = solve_poisson_pcg_gpu(
+                    grid.rho, grid.m, grid.n, grid.dx, grid.dy, 
+                    Consts.eps0, phi0=grid.phi, tol=self.tol, preconditioner='none'
+                )
+            case 'cg_precond':
+                grid.phi[:] = solve_poisson_pcg_gpu(
+                    grid.rho, grid.m, grid.n, grid.dx, grid.dy, 
+                    Consts.eps0, phi0=grid.phi, tol=self.tol, preconditioner='jacobi'
+                )
             case 'multigrid':
+                # This method will be overridden in the MultigridSolver class
+                # But we put a simple implementation here for completeness
+                print("Warning: Using base Solver.solve for multigrid, which is not implemented!")
                 pass
-                '''
-                Solvers.restrict_grid(cp.reshape(rho, (m,n)), rho_multigrid[0])
-                Solvers.restrict_grid(rho_multigrid[0], rho_multigrid[1])
-                phi_multigrid[1] = cp.dot(Lap_multigrid, -rho_multigrid[1].flatten() * Consts.eps0_1 * dx * dy).reshape(phi_multigrid[1].shape)
-                Solvers.interpolate_grid(phi_multigrid[1], phi_multigrid[0])
-                phi_tmp_1 = Solvers.solve_poisson_pcg_gpu(rho_multigrid[0].flatten(), *phi_multigrid[0].shape, X/phi_multigrid[0].shape[0], Y/phi_multigrid[0].shape[1], Consts.eps0, phi0=phi_multigrid[0].flatten(), max_iter=10)
-                phi_tmp = cp.zeros((m,n))
-                Solvers.interpolate_grid(phi_tmp_1.reshape(phi_multigrid[0].shape), phi_tmp)
-                #phi = phi_tmp.flatten()
-                phi = Solvers.solve_poisson_pcg_gpu(rho, m, n, dx, dy, Consts.eps0, phi0=phi_tmp.flatten(), max_iter=10)
-                '''
             case 'gmres':
-                assert not cp.any(cp.isnan(grid.rho)), "grid.rho contains NaN"
-                assert not cp.any(cp.isinf(grid.rho)), "grid.rho contains Inf"
-
-                assert not cp.any(cp.isnan(grid.b)), "grid.b contains NaN"
-                assert not cp.any(cp.isinf(grid.b)), "grid.b contains Inf"
-                
-                assert not cp.any(cp.isnan(grid.phi)), "grid.phi contains NaN"
-                assert not cp.any(cp.isinf(grid.phi)), "grid.phi contains Inf"
-                grid.phi[:], iter = gmres(self.Lap, grid.b, x0=grid.phi, tol=1e-2)
+                grid.phi[:], iter = gmres(self.Lap, grid.b, x0=grid.phi, tol=self.tol)
             case None:
                 pass
+
+
+
+

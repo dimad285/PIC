@@ -1,4 +1,3 @@
-import numpy as np
 import cupy as cp
 import Grid
 
@@ -13,6 +12,8 @@ class Boundaries():
         for i in bounds:
             x0, y0, x1, y1 = i[0]
             self.bound_tuple.append((int(x0), int(y0), int(x1), int(y1)))
+
+        #move collision mask from collisons.py
 
 
     def boundary_array(self, input: tuple, gridsize: tuple) -> tuple[cp.ndarray, cp.ndarray]:

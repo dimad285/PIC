@@ -12,6 +12,7 @@ import Boundaries
 import Particles
 import Grid
 import MCC
+import multigrid
 
 
 def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt = 0.001, grid_type='2d',
@@ -31,10 +32,18 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
     particles = Particles.Particles2D(max_particles)
     grid = Grid.Grid2D(m, n, X, Y)
     diagnostics = simulation.Diagnostics()
+
     if boundary != None:
         boundaries = Boundaries.Boundaries(boundary, grid)
-    solver = Solvers.Solver(solver_type, grid, boundaries.conditions)
-        
+        bound_tuple = boundaries.bound_tuple
+        walls = boundaries.walls
+        #solver = Solvers.Solver(solver_type, grid, boundaries.conditions)
+        solver = Solvers.Solver(solver_type, grid, boundaries.conditions, 1e-5)
+    else:
+        solver = Solvers.Solver(solver_type, grid, tol=1e-5)
+        bound_tuple = ()
+        walls = None
+
     if UI:
         root = tk.Tk()
         gui = Interface.SimulationUI_tk(root)
@@ -48,7 +57,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
     cross_sections = [cross_section_elastic, cross_section_ion]
     
     # MAIN LOOP
-    el_k = 1000
+    el_k = 10000
     particles.uniform_species_load(X * 0.25, Y * 0.25, X/(m-1), Y/(n-1), el_k, 'electron')
     #particles.uniform_species_load(X * 0.25, Y * 0.25, X/(m-1), Y/(n-1), el_k, 'proton')
     particles.update_bilinear_weights(grid)
@@ -66,13 +75,11 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
         
         if state["simulation_running"] or state["simulation_step"]:
             # UPDATE
-            simulation.step(particles, grid, dt, solver, cross_sections, max_particles, boundaries.walls)
+            simulation.step(particles, grid, dt, solver, cross_sections, max_particles, walls)
             diagnostics.update(t, particles, grid, sim_time)
             t += dt
-            if step < 3000:
-                sim_time = 0
-            else:
-                sim_time = time.perf_counter() - start_time
+            sim_time = time.perf_counter() - start_time
+
             if state["simulation_step"]:
                 state["simulation_step"] = False
 
@@ -87,7 +94,7 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
             
             simulation.draw(renderer, state, particles, grid, camera,
                             frame_time, sim_time, dt,
-                            diagnostics, SCREEN_SIZE, boundaries.bound_tuple)
+                            diagnostics, SCREEN_SIZE, bound_tuple)
 
             frame_time = time.perf_counter() - start_time
 
@@ -106,8 +113,6 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
 
 
 
-
-
 if __name__ == "__main__":
     
 
@@ -123,7 +128,7 @@ if __name__ == "__main__":
     X = config['X']
     Y = config['Y']
     Z = config['Z']
-    boundarys = config['boundarys']
+    boundaries = config['boundarys']
 
     solver_type = 'gmres'
 
@@ -131,7 +136,7 @@ if __name__ == "__main__":
     pr.enable()
     
     run_gpu(m, n, k, X, Y, Z, max_particles, dt, grid_type='2d',
-                            boundary=boundarys, 
+                            boundary=boundaries, 
                             RENDER=config['RENDER'], 
                             RENDER_FRAME=config['RENDER_FRAME'], 
                             solver_type=solver_type, 

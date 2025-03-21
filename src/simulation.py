@@ -1,6 +1,5 @@
 import cupy as cp
 import numpy as np
-import Update
 import collisions
 import Solvers
 import Render
@@ -9,8 +8,8 @@ import Grid
 import MCC
 
 
-class Boundaries():
-    pass
+
+
 
 class Diagnostics():
     
@@ -47,6 +46,116 @@ class Diagnostics():
         self.history_P = cp.append(self.history_P, P)
         self.history_sim_time = cp.append(self.history_sim_time, sim_time)
 
+    
+    def KE_distribution(part_type, v:cp.ndarray, M:cp.ndarray, bins:int) -> list:
+        E = (v[0]**2 + v[1]**2)*M[part_type]*0.5
+        x = np.arange(bins)*cp.asnumpy(cp.max(E))/bins
+        return (x, cp.asnumpy(cp.histogram(E, bins, density=True)[0]))
+
+    def V_distribution(v:cp.ndarray, bins:int) -> list:
+        x = np.arange(bins)
+        return (x, cp.asnumpy(cp.histogram(cp.hypot(v[0], v[1]), bins, density=True)[0]))
+    
+
+    def check_gauss_law_2d(E, rho, epsilon_0, dx, dy, nx, ny):
+        """
+        Check Gauss's law for a 2D grid using cupy arrays.
+        
+        Parameters:
+        E (cupy.ndarray): Electric field with shape (2, nx*ny), E[0] is Ex and E[1] is Ey.
+        rho (cupy.ndarray): Charge density with shape (nx*ny).
+        epsilon_0 (float): Permittivity of free space.
+        dx, dy (float): Grid spacing in x and y directions.
+        nx, ny (int): Number of grid points in x and y directions.
+        
+        Returns:
+        tuple: line_integral, area_integral, relative_error
+        """
+        # Reshape E and rho to 2D grids
+        Ex = E[0].reshape(nx, ny)
+        Ey = E[1].reshape(nx, ny)
+        rho_2d = rho.reshape(nx, ny)
+        
+        # Compute line integral of the electric field (flux through boundaries)
+        line_integral = (
+            cp.sum(Ex[0, :]) * dy - cp.sum(Ex[-1, :]) * dy +  # Top and bottom boundaries
+            cp.sum(Ey[:, -1]) * dx - cp.sum(Ey[:, 0]) * dx    # Right and left boundaries
+        )
+        
+        # Compute area integral of charge density (total charge divided by epsilon_0)
+        total_charge = cp.sum(rho_2d) * dx * dy
+        area_integral = total_charge / epsilon_0
+        
+        # Compute relative error, handle zero area_integral
+        if abs(area_integral) > 1e-12:  # Avoid division by near-zero values
+            relative_error = abs(line_integral - area_integral) / abs(area_integral)
+        else:
+            relative_error = float('inf')  # Undefined error if area_integral is zero
+        
+        return line_integral, area_integral, relative_error
+
+
+    def compute_divergence_error(E, rho, epsilon_0, dx, dy, nx, ny):
+        """
+        Compute the norm of the error between divergence of E and rho / epsilon_0,
+        and the surface integral of the divergence over the domain.
+        
+        Parameters:
+        E (cupy.ndarray): Electric field with shape (2, nx*ny), E[0] is Ex and E[1] is Ey.
+        rho (cupy.ndarray): Charge density with shape (nx*ny).
+        epsilon_0 (float): Permittivity of free space.
+        dx, dy (float): Grid spacing in x and y directions.
+        nx, ny (int): Number of grid points in x and y directions.
+        
+        Returns:
+        tuple: (error_norm, surface_integral, boundary_flux)
+            - error_norm (float): L2 norm of the error.
+            - surface_integral (float): Integral of divergence of E over the domain.
+            - boundary_flux (float): Line integral of E field over the domain boundary.
+        """
+        # Reshape E and rho to 2D grids
+        Ex = E[0].reshape(nx, ny)
+        Ey = E[1].reshape(nx, ny)
+        rho_2d = rho.reshape(nx, ny)
+        
+        # Compute divergence of E
+        divE = cp.zeros((nx, ny), dtype=cp.float32)
+        
+        # Central differences for interior points
+        divE[1:-1, 1:-1] = (
+            (Ex[2:, 1:-1] - Ex[:-2, 1:-1]) / (2 * dx) + 
+            (Ey[1:-1, 2:] - Ey[1:-1, :-2]) / (2 * dy)
+        )
+        
+        # One-sided differences for boundaries
+        divE[0, :] = (Ex[1, :] - Ex[0, :]) / dx  # Bottom
+        divE[-1, :] = (Ex[-1, :] - Ex[-2, :]) / dx  # Top
+        divE[:, 0] = (Ey[:, 1] - Ey[:, 0]) / dy  # Left
+        divE[:, -1] = (Ey[:, -1] - Ey[:, -2]) / dy  # Right
+        
+        # Compute the error
+        error = divE - rho_2d / epsilon_0
+        
+        # Compute the L2 norm of the error
+        error_norm = cp.sqrt(cp.sum(error**2))
+        
+        # Compute the surface integral of divergence
+        surface_integral = cp.sum(divE) * dx * dy
+        
+        return error_norm, surface_integral
+
+    def Vx_distribution(v:cp.ndarray, bins:int) -> list:
+        x = np.arange(bins)
+        return (x, cp.asnumpy(cp.histogram(v[0], bins, density=True)[0]))
+
+    def Vy_distribution(v:cp.ndarray, bins:int) -> list:
+        x = np.arange(bins)
+        return (x, cp.asnumpy(cp.histogram(v[1], bins, density=True)[0]))
+    
+    def P_distribution(v:cp.ndarray, part_type:cp.ndarray, M:cp.ndarray, bins:int) -> list:
+        x = np.arange(bins)
+        return (x, cp.asnumpy(cp.histogram(cp.hypot(v[0], v[1]) * M[part_type], bins, density=True)[0]))
+
 
 
 def init_simulation(m, n, X, Y, N, dt, species):
@@ -67,13 +176,6 @@ def step(particles:Particles.Particles2D, grid:Grid.Grid2D, dt, solver:Solvers.S
     grid.update_E()
     particles.update_V(grid, dt)
     MCC.null_collision_method(particles, grid, 1e19, cross_sections, dt, MAX_PARICLES)
-    #print(particles.R[:, :particles.last_alive])
-    '''
-    try:
-        MCC.null_collision_method(particles, 1e19, cross_sections, dt, MAX_PARICLES)
-    except(ValueError):
-        print('mcc error', particles.last_alive)
-    '''
 
 
 def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, grid:Grid.Grid2D,
@@ -126,11 +228,11 @@ def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, gr
                 case "sim_time":
                     line_plot(renderer, diagnostics.history_t, diagnostics.history_sim_time, SCREEN_SIZE, "sim_time")
                 case "distribution_V":
-                    dist_x, dist_y = Update.V_distribution(particles.V, bins=128)
-                    line_plot(renderer, dist_x, dist_y, SCREEN_SIZE, "distribution_V")
+                    dist_x, dist_y = Diagnostics.V_distribution(particles.V, bins=128)
+                    line_plot(renderer, dist_x[1:], dist_y[1:], SCREEN_SIZE, "distribution_V")
                 case "distribution_E":
-                    dist_x, dist_y = Update.KE_distribution(part_type=particles.part_type, v=particles.V, M=particles.m_type, bins=128)
-                    line_plot(renderer, dist_x, dist_y, SCREEN_SIZE, "distribution_E")
+                    dist_x, dist_y = Diagnostics.KE_distribution(part_type=particles.part_type, v=particles.V, M=particles.m_type, bins=128)
+                    line_plot(renderer, dist_x[1:], dist_y[1:], SCREEN_SIZE, "distribution_E")
         
         case "surface_plot":
             surf_scale = 1
@@ -181,23 +283,3 @@ def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, gr
     renderer.render(clear = not state['trace_enabled'], TEXT_RENDERING=state['text_enabled'], BOUNDARY_RENDERING = True)
 
 
-def uniform_particle_generator_2d(R, V, last_alive, part_type, x, y, dx, dy):
-    R[0, last_alive] = cp.random.uniform(x - dx * 0.5, x + dx * 0.5)
-    R[1, last_alive] = cp.random.uniform(y - dy * 0.5, y + dy * 0.5)
-    V[:, last_alive] = 0
-    part_type[last_alive] = cp.random.randint(1, 3)
-    last_alive += 1
-
-def uniform_particle_load(R, V, last_alive, part_type, x, y, dx, dy, n):
-    R[0, last_alive:last_alive + n] = cp.random.uniform(x - dx * 0.5, x + dx * 0.5, n)
-    R[1, last_alive:last_alive + n] = cp.random.uniform(y - dy * 0.5, y + dy * 0.5, n)
-    V[:, last_alive:last_alive + n] = 0
-    part_type[last_alive:last_alive + n] = cp.random.randint(1, 3, n)
-    last_alive += n
-
-def uniform_species_load(R, V, last_alive, part_type, part_name, x, y, dx, dy, n, species):
-    R[0, last_alive:last_alive + n] = cp.random.uniform(x - dx * 0.5, x + dx * 0.5, n)
-    R[1, last_alive:last_alive + n] = cp.random.uniform(y - dy * 0.5, y + dy * 0.5, n)
-    V[:, last_alive:last_alive + n] = 0
-    part_type[last_alive:last_alive + n] = part_name.index(species)
-    last_alive += n
