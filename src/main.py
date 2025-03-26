@@ -15,9 +15,9 @@ import MCC
 import multigrid
 
 
-def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt = 0.001, grid_type='2d',
+def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt = 0.001, cylindrical=False,
             boundary = None, RENDER = True, UI = True, RENDER_FRAME = 1, 
-            SCREEN_SIZE = (512, 512), solver_type = 'inverse'):
+            SCREEN_SIZE = (512, 512), solver_type = 'inverse', save_fields = False):
     
     print('Starting...')
     fontfile = "fonts\\Arial.ttf"
@@ -29,8 +29,8 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
 
     # INIT
     print('creating arrays...')
-    particles = Particles.Particles2D(max_particles)
-    grid = Grid.Grid2D(m, n, X, Y)
+    particles = Particles.Particles2D(max_particles, cylindrical=cylindrical)
+    grid = Grid.Grid2D(m, n, X, Y, cylindrical=cylindrical)
     diagnostics = simulation.Diagnostics()
 
     if boundary != None:
@@ -38,9 +38,9 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
         bound_tuple = boundaries.bound_tuple
         walls = boundaries.walls
         #solver = Solvers.Solver(solver_type, grid, boundaries.conditions)
-        solver = Solvers.Solver(solver_type, grid, boundaries.conditions, 1e-5)
+        solver = Solvers.Solver(solver_type, grid, cylindrical=cylindrical, boundaries=boundaries.conditions, tol=1e-6)
     else:
-        solver = Solvers.Solver(solver_type, grid, tol=1e-5)
+        solver = Solvers.Solver(solver_type, grid, cylindrical=cylindrical, tol=1e-6)
         bound_tuple = ()
         walls = None
 
@@ -57,12 +57,13 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
     cross_sections = [cross_section_elastic, cross_section_ion]
     
     # MAIN LOOP
-    el_k = 10000
-    particles.uniform_species_load(X * 0.25, Y * 0.25, X/(m-1), Y/(n-1), el_k, 'electron')
+    el_k = 1000
+    particles.uniform_species_load(X * 0.25 + 2 * X/(m-1), Y * 0.5, X/(m-1), Y/(n-1), el_k, 'electron')
     #particles.uniform_species_load(X * 0.25, Y * 0.25, X/(m-1), Y/(n-1), el_k, 'proton')
     particles.update_bilinear_weights(grid)
-    particles.sort_particles_sparse(grid.cell_count)
+    #particles.sort_particles_sparse(grid.cell_count)
     #print(particles.part_type[:particles.last_alive])
+    particles.np2c = 1e6
 
     print('running...')
     while True:
@@ -109,6 +110,12 @@ def run_gpu(m = 16, n = 16, k = 0, X = 1, Y = 1, Z = 1, max_particles = 1000, dt
         renderer.close()
         print('Renderer closed')
 
+    if save_fields:
+        if cylindrical:
+            grid.save_to_txt('fields/fields_cylindrical.txt', fields={'rho': grid.rho, 'phi': grid.phi}, header='z r rho phi')
+        else:
+            grid.save_to_txt('fields/fields_cartesian.txt', fields={'rho': grid.rho, 'phi': grid.phi}, header='x y rho phi')
+
     return 0
 
 
@@ -129,19 +136,19 @@ if __name__ == "__main__":
     Y = config['Y']
     Z = config['Z']
     boundaries = config['boundarys']
-
+    print(boundaries)
     solver_type = 'gmres'
 
     pr = cProfile.Profile()
     pr.enable()
     
-    run_gpu(m, n, k, X, Y, Z, max_particles, dt, grid_type='2d',
+    run_gpu(m, n, k, X, Y, Z, max_particles, dt, cylindrical=False,
                             boundary=boundaries, 
                             RENDER=config['RENDER'], 
                             RENDER_FRAME=config['RENDER_FRAME'], 
                             solver_type=solver_type, 
                             SCREEN_SIZE=config['SCREEN_SIZE'],
-                            UI=config['UI'],)
+                            UI=config['UI'],save_fields=True)
     
     pr.disable()
     pr.dump_stats("profile.prof")
@@ -151,3 +158,10 @@ if __name__ == "__main__":
     ps.print_stats()
     with open("profile.txt", "w") as f:
         f.write(s.getvalue())
+
+
+'''
+to do:
+- add multigrid solver
+- check if Laplacian is positive definite and symmetric
+'''

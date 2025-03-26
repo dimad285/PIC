@@ -50,7 +50,7 @@ def null_collision_method(particles:Particles.Particles2D, grid:Grid.Grid2D, den
     # Compute electron energies (in eV)
     electron_velocities = particles.V[:, electron_indices]
     speeds = cp.linalg.norm(electron_velocities, axis=0)
-    energies = 0.5 * Consts.me * speeds**2 / Consts.qe  # Convert to eV
+    energies = 0.5 * Consts.me * speeds**2 * Consts.qe_1  # Convert to eV
 
     # Interpolate cross-sections based on electron energy
     elastic_sigma_T = cp.interp(energies, cross_sections[0][0], cross_sections[0][1])
@@ -127,6 +127,6 @@ def null_collision_method(particles:Particles.Particles2D, grid:Grid.Grid2D, den
 
     if cp.any(elastic_indices):
         theta = cp.random.uniform(0, 2 * cp.pi, elastic_indices.shape[0])
-        particles.V[:, elastic_indices] = cp.sqrt(2 * energies[colliding_mask][elastic_mask] * Consts.qe / Consts.me) * cp.array(
+        particles.V[:2, elastic_indices] = cp.sqrt(2 * energies[colliding_mask][elastic_mask] * Consts.qe / Consts.me) * cp.array(
             [cp.cos(theta), cp.sin(theta)]
         )

@@ -175,7 +175,7 @@ def step(particles:Particles.Particles2D, grid:Grid.Grid2D, dt, solver:Solvers.S
     solver.solve(grid)
     grid.update_E()
     particles.update_V(grid, dt)
-    MCC.null_collision_method(particles, grid, 1e19, cross_sections, dt, MAX_PARICLES)
+    #MCC.null_collision_method(particles, grid, 1e19, cross_sections, dt, MAX_PARICLES)
 
 
 def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, grid:Grid.Grid2D,
@@ -209,7 +209,7 @@ def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, gr
                     if bound_tuple != None:
                         renderer.update_boundaries(bound_tuple, (m, n))
                 case "V":
-                    renderer.update_particles(particles.V, particles.part_type, cp.min(particles.V[0]), cp.max(particles.V[0]), cp.min(particles.V[1]), cp.max(particles.V[1]))
+                    renderer.update_particles(particles.V[:2], particles.part_type, cp.min(particles.V[0]), cp.max(particles.V[0]), cp.min(particles.V[1]), cp.max(particles.V[1]))
         
         case "heatmap":
             renderer.renderer_type = "heatmap"
@@ -240,37 +240,37 @@ def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, gr
             #camera.r = gui.cam_dist.get()
             renderer.set_fov(camera.fov)
             renderer.set_camera(camera.position)
-            if state['simulation_running']:
+            #if state['simulation_running']:
 
-                x, y = np.meshgrid(np.linspace(-1, 1, n), np.linspace(-1, 1, m))
-                #plot_var_name = 'phi'
-                surf_max = cp.max(grid.phi)
-                surf_min = cp.min(grid.phi)
-                if surf_max == 0:
-                    surf_max_1 = 1
-                else:
-                    surf_max_1 = 1/surf_max
-                z = cp.asnumpy(cp.reshape(grid.phi*surf_max_1*surf_scale, (m, n)))
-                renderer.update_surface(x, y, z)
-                renderer.update_legend('surface_max', f"phi_max: {surf_max:.2e} V", 230)
-                renderer.update_legend('surface_min', f"phi_min: {surf_min:.2e} V", 260)
-                renderer.label_list.extend(['surface_max', 'surface_min'])
+            x, y = np.meshgrid(np.linspace(-1, 1, n), np.linspace(-1, 1, m))
+            #plot_var_name = 'phi'
+            surf_max = cp.max(grid.phi)
+            surf_min = cp.min(grid.phi)
+            if surf_max == 0:
+                surf_max_1 = 1
+            else:
+                surf_max_1 = 1/surf_max
+            z = cp.asnumpy(cp.reshape(grid.phi*surf_max_1*surf_scale, (m, n)))
+            renderer.update_surface(x, y, z)
+            renderer.update_legend('surface_max', f"phi_max: {surf_max:.2e} V", 230)
+            renderer.update_legend('surface_min', f"phi_min: {surf_min:.2e} V", 260)
+            renderer.label_list.extend(['surface_max', 'surface_min'])
 
-                '''
-                x, y = np.meshgrid(np.linspace(-1, 1, n), np.linspace(-1, 1, m))
-                #plot_var_name = 'phi'
-                surf_max = cp.max(locals()[plot_var_name])
-                surf_min = cp.min(locals()[plot_var_name])
-                if surf_max == 0:
-                    surf_max_1 = 1
-                else:
-                    surf_max_1 = 1/surf_max
-                z = cp.asnumpy(cp.reshape(locals()[plot_var_name]*surf_max_1*surf_scale, (m, n)))
-                renderer.update_surface(x, y, z)
-                renderer.update_legend('surface_max', f"{plot_var_name}_max: {surf_max:.2e} V", 230)
-                renderer.update_legend('surface_min', f"{plot_var_name}_min: {surf_min:.2e} V", 260)
-                renderer.label_list.extend(['surface_max', 'surface_min'])
-                '''
+            '''
+            x, y = np.meshgrid(np.linspace(-1, 1, n), np.linspace(-1, 1, m))
+            #plot_var_name = 'phi'
+            surf_max = cp.max(locals()[plot_var_name])
+            surf_min = cp.min(locals()[plot_var_name])
+            if surf_max == 0:
+                surf_max_1 = 1
+            else:
+                surf_max_1 = 1/surf_max
+            z = cp.asnumpy(cp.reshape(locals()[plot_var_name]*surf_max_1*surf_scale, (m, n)))
+            renderer.update_surface(x, y, z)
+            renderer.update_legend('surface_max', f"{plot_var_name}_max: {surf_max:.2e} V", 230)
+            renderer.update_legend('surface_min', f"{plot_var_name}_min: {surf_min:.2e} V", 260)
+            renderer.label_list.extend(['surface_max', 'surface_min'])
+            '''
     
     if state['text_enabled']:
         renderer.update_legend('sim', f"Sim time: {(sim_time)*1e6:.1f} mks", 80)
