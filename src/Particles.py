@@ -7,28 +7,30 @@ class Particles2D():
         self.cylindrical = cylindrical # 'cartesian' or 'cylindrical'
 
         self.R = cp.zeros((2, N))
+        self.R_old = cp.zeros((2, N))
         self.V = cp.zeros((3, N))   
         self.part_type = cp.zeros(N, dtype=cp.int32) # particle type (0 - empty, 1 - proton, 2 - electron)
 
-        self.R_grid = cp.zeros(N, dtype=cp.int32) # particle positions in grid space (in which cell they are)
-        #R_grid_new = cp.zeros(max_particles, dtype=cp.int32)
-        # When paarticle 'dies' it's type is set to 0 and it is swapped with the last alive particle
-        self.last_alive = 0 # index of last alive particle
-        # Problems can be with particle sorting
-        self.part_name = ['', 'proton', 'electron']
-        self.m_type = cp.array([0, Consts.mp, Consts.me], dtype=cp.float32)
-        self.m_type_inv = cp.array([0, 1/Consts.mp, 1/Consts.me], dtype=cp.float32)
-        self.q_type = cp.array([0, 1.0 * Consts.qe, -1.0 * Consts.qe], dtype=cp.float32)
         self.weights = cp.zeros((4, N), dtype=cp.float32)
         self.indices = cp.zeros((4, N), dtype=cp.int32)
+
+        self.R_grid = cp.zeros(N, dtype=cp.int32) # particle positions in grid space (in which cell they are)
+        self.R_grid_new = cp.zeros(N, dtype=cp.int32) # particle positions in grid space (in which cell they are)
         self.active_cells = None
         self.cell_starts = None
         self.sorted_indices = None
 
-        self.cross_sectiond = [None]
+        self.last_alive = 0 # index of last alive particle
+        
+        # Species
+        self.part_name = ['reserved']
+        self.m_type = cp.array([0], dtype=cp.float32)
+        self.m_type_inv = cp.array([0], dtype=cp.float32)
+        self.q_type = cp.array([0], dtype=cp.float32)
+        self.collision_model = cp.array([128], dtype=cp.int32)
 
+        self.cross_sections = [None]
         self.species_count = []
-        self.total_count = 0
 
         self.min_vx = 0
         self.max_vx = 0
@@ -41,13 +43,15 @@ class Particles2D():
     def get_R(self):
         return self.R[:, :self.last_alive]
 
-    def add_species(self, species_name:str, species_mass:float, species_charge:float):
+    def add_species(self, species_name:str, species_mass:float, species_charge:float, collision_model:int=0):
         self.part_name.append(species_name)
         self.m_type = cp.append(self.m_type, species_mass)
         self.m_type_inv = cp.append(self.m_type_inv, 1/species_mass)
         self.q_type = cp.append(self.q_type, species_charge)
+        self.collision_model = cp.append(self.collision_model, collision_model)
 
     def update_R(self, dt):
+        self.R_old[:, :self.last_alive] = self.R[:, :self.last_alive]
         self.R[:, :self.last_alive] += self.V[:2, :self.last_alive] * dt
 
     def update_V(self, grid, dt):
@@ -230,6 +234,8 @@ class Particles2D():
             self.indices[2, :la] = z1 * m + r0  # top-left
             self.indices[3, :la] = z1 * m + r1  # top-right
 
+            self.R_grid[:la] = self.indices[0, :la] - self.indices[0, :la]//m
+
         else:
 
             m, n = grid.gridshape
@@ -349,15 +355,28 @@ class Particles2D():
         self.cell_starts = cell_starts
         self.sorted_indices = sorted_indices
 
+    
+    def remove(self, indices):
+        """
+        Remove particles by swapping with the last active particle and decreasing the active particle counter.
+        """
+        num_remove = indices.size
+        if num_remove == 0:
+            return 0
+        
+        # Get indices of last alive particles to swap with
+        swap_idx = cp.arange(self.last_alive - num_remove, self.last_alive)
 
-    def uniform_particle_generator_2d(self, x, y, dx, dy):
-        la = self.last_alive
-        self.R[0, la] = cp.random.uniform(x - dx * 0.5, x + dx * 0.5)
-        self.R[1, la] = cp.random.uniform(y - dy * 0.5, y + dy * 0.5)
-        self.V[0, la] = cp.random.uniform(-0.1, 0.1)
-        self.V[1, la] = cp.random.uniform(-0.1, 0.1)
-        self.part_type[la] = cp.random.randint(1, 3)
-        self.last_alive += 1
+        # Perform swaps
+        self.R[:, indices], self.R[:, swap_idx] = self.R[:, swap_idx], self.R[:, indices]
+        self.V[:, indices], self.V[:, swap_idx] = self.V[:, swap_idx], self.V[:, indices]
+        self.part_type[indices], self.part_type[swap_idx] = self.part_type[swap_idx], self.part_type[indices]
+        self.part_type[self.last_alive-num_remove:self.last_alive] = 0
+
+        # Update alive count
+        self.last_alive -= num_remove
+        
+        #self.part_type[indices] = 0
 
     def uniform_particle_load(self, x, y, dx, dy, n):
         la = self.last_alive
@@ -368,10 +387,10 @@ class Particles2D():
         self.part_type[la:la + n] = cp.random.randint(1, 3, n)
         self.last_alive += n
 
-    def uniform_species_load(self, x, y, dx, dy, n, species):
+    def uniform_species_load(self, x1, y1, x2, y2, n, species):
         la = self.last_alive
-        self.R[0, la:la + n] = cp.random.uniform(x - dx * 0.5, x + dx * 0.5, n)
-        self.R[1, la:la + n] = cp.random.uniform(y - dy * 0.5, y + dy * 0.5, n)
+        self.R[0, la:la + n] = cp.random.uniform(x1, x2, n)
+        self.R[1, la:la + n] = cp.random.uniform(y1, y2, n)
         self.V[0, la] = cp.random.uniform(-0.1, 0.1)
         self.V[1, la] = cp.random.uniform(-0.1, 0.1)
         self.part_type[la:la + n] = self.part_name.index(species)

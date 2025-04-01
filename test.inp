@@ -1,0 +1,173 @@
+basic
+{
+The most basic OOPIC Pro input file possible.
+}
+
+
+System
+{
+	MAX_PARTICLES = 2000000
+	UI = 1
+	RENDER = 1
+	RENDER_FRAME = 2
+	DIAGNOSTICS = 0
+	DIAG_TYPE = heatmap
+	bins = 128
+	SCREEN_WIDTH = 1080
+	SCREEN_HEIGHT = 1080
+	IONIZATION = 0
+	SAVE_FIELDS = 1
+}
+
+Variables
+{
+	//physics
+	d = 0.001
+	U = 100
+	p = 10
+	T = 0.025
+	perm = 4.2 
+	Qflag = 1	
+
+
+	//grid
+	Kmax = 32
+  	Jmax = 32
+	
+	//time
+	baseTime = 1.0e-9
+  	
+	//species
+	A = 40
+	Gie = 0.03
+	
+	//load
+	init_count = 1000000
+	load_l1 = 0.26
+	load_l2 = 0.27
+	load_r1 = 0.25
+	load_r2 = 0.35
+}
+
+
+Grid
+{
+	Cylindrical = 0
+	J = Jmax		
+	K = Kmax		
+	x1s = 0	
+	x1f = 1
+	x2s = 0		
+	x2f = 1
+}
+
+Control
+{ 
+	dt = baseTime
+	solver = gmres
+}
+
+
+Species  
+{
+	name = electrons
+	m = 9.11E-31
+	q = -1.60E-19
+	collisionModel = 0
+} 
+
+
+Species
+{
+	name = ions
+	m = A * 1.66e-27
+	q = 1.6e-19
+	collisionModel = 1
+}
+
+
+Equipotential
+{
+C = 0
+name = cathode
+j1 = Jmax/4
+j2 = Jmax/4
+k1 = Kmax/4
+k2 = Kmax*3/4
+}
+
+
+Equipotential
+{
+C = U
+name = anode
+j1 = Jmax*3/4
+j2 = Jmax*3/4
+k1 = Kmax/4
+k2 = Kmax*3/4
+}
+
+Equipotential
+{
+C = 0
+name = left
+j1 = 0
+j2 = 0
+k1 = 0
+k2 = Kmax
+}
+
+Equipotential
+{
+C = 0
+name = right
+j1 = Jmax
+j2 = Jmax
+k1 = 0
+k2 = Kmax
+}
+
+Equipotential
+{
+C = 0
+name = top
+j1 = 0
+j2 = Jmax
+k1 = Kmax
+k2 = Kmax
+}
+
+Equipotential
+{
+C = 0
+name = bottom
+j1 = 0
+j2 = Jmax
+k1 = 0
+k2 = 0
+}
+
+Load
+{
+	speciesName = electrons
+	n = init_count
+	x1MinMKS = load_l1 
+	x1MaxMKS = load_l2
+	x2MinMKS = load_r1
+	x2MaxMKS = load_r2
+}
+
+
+MCC
+{
+gas = Ar
+pressure = p
+temperature = T
+eSpecies = electrons
+NElectronCollisions = 1
+NIonCollisions = 0
+iSpecies = ions
+ElecCollElasticXSectionFile = csf/Ar.txt
+ElecCollIonXSectionFile = csf/Ar+.txt
+collisionFlag = 1
+}

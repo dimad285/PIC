@@ -7,6 +7,7 @@ class SimulationUI_tk:
         """
         Initialize the UI for simulation control.
         """
+        self.root = root
         # Internal state
         self.state = {
             "simulation_running": False,
@@ -117,6 +118,10 @@ class SimulationUI_tk:
     def get_state(self):
         """Return the current state as a dictionary."""
         return self.state
+
+    def update(self):
+        """Update the UI state."""
+        self.root.update()
 
 
 class SimulationUI_imgui:

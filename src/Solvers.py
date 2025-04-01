@@ -171,6 +171,8 @@ def Laplacian_cylindrical_csr(m, n, dr, dz) -> cp.ndarray:
     return laplacian
 
 
+
+
 def apply_boundary_conditions(Laplacian, boundary_nodes, boundary_value=0):
     """
     Apply Dirichlet boundary conditions directly to a CuPy CSR matrix.

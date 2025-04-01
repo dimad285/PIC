@@ -23,6 +23,7 @@ class Grid2D():
         self.domain = (X, Y)
 
         self.rho = cp.zeros(m*n)
+        self.wall_rho = cp.zeros(m*n)
         self.b = cp.zeros(m*n) # righr-hand side of the Poisson equation
         self.phi = cp.zeros(m*n)
         self.E = cp.zeros((2, m*n))

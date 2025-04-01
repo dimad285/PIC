@@ -26,7 +26,7 @@ def read_cross_section(filename):
     
 
 
-def null_collision_method(particles:Particles.Particles2D, grid:Grid.Grid2D, densities, cross_sections, dt:float, max_particles:int):
+def null_collision_method(particles:Particles.Particles2D, grid:Grid.Grid2D, densities, cross_sections, dt:float, max_particles:int, IONIZATION=True):
     """
     Implements the null collision method with ionization and elastic collisions.
 
@@ -40,7 +40,7 @@ def null_collision_method(particles:Particles.Particles2D, grid:Grid.Grid2D, den
     """
 
     # Select only electrons (type 2)
-    electron_mask = particles.part_type[:particles.last_alive] == 2
+    electron_mask = particles.part_type[:particles.last_alive] == particles.part_name.index('electrons')
     electron_indices = cp.where(electron_mask)[0]
 
     if electron_indices.size == 0:
@@ -80,7 +80,8 @@ def null_collision_method(particles:Particles.Particles2D, grid:Grid.Grid2D, den
     # --- Ionization ---
     ionization_mask = (R_values < ionization_prob) & (energies[colliding_mask] > ionization_threshold)
 
-    if cp.any(ionization_mask):
+    if cp.any(ionization_mask) and IONIZATION:
+        
         ionizing_indices = colliding_electron_indices[ionization_mask]
         num_new = ionizing_indices.shape[0] * 2
         num_available = max_particles - particles.last_alive
@@ -94,8 +95,8 @@ def null_collision_method(particles:Particles.Particles2D, grid:Grid.Grid2D, den
             particles.last_alive += num_to_create
 
 
-            particles.part_type[new_indices[::2]] = 2  # Electrons
-            particles.part_type[new_indices[1::2]] = 1  # Ions  
+            #particles.part_type[new_indices[::2]] = particles.part_name.index('electrons')  # Electrons
+            particles.part_type[new_indices] = particles.part_name.index('ions')  # Ions  
 
             # Assign new positions
             #print(cp.repeat(particles.R[:, ionizing_indices[:num_to_create // 2]], 2, axis=1))
@@ -117,11 +118,12 @@ def null_collision_method(particles:Particles.Particles2D, grid:Grid.Grid2D, den
             #particles.V[1, new_indices] = speed * cp.sin(theta)
 
             # Reduce original electron energy
-            denominator = cp.maximum(energies[ionizing_indices][:num_to_create // 2], 1e-30)
-            scale_factor = cp.sqrt(cp.maximum((energies[ionizing_indices][:num_to_create // 2] - ionization_threshold) / denominator, 0))
-            particles.V[:, ionizing_indices[:num_to_create // 2]] *= scale_factor
+            #denominator = cp.maximum(energies[ionizing_indices][:num_to_create // 2], 1e-30)
+            #scale_factor = cp.sqrt(cp.maximum((energies[ionizing_indices][:num_to_create // 2] - ionization_threshold) / denominator, 0))
+            #particles.V[:, ionizing_indices[:num_to_create // 2]] *= scale_factor
 
     # --- Elastic Scattering ---
+    
     elastic_mask = ~ionization_mask
     elastic_indices = colliding_electron_indices[elastic_mask]
 
@@ -130,3 +132,4 @@ def null_collision_method(particles:Particles.Particles2D, grid:Grid.Grid2D, den
         particles.V[:2, elastic_indices] = cp.sqrt(2 * energies[colliding_mask][elastic_mask] * Consts.qe / Consts.me) * cp.array(
             [cp.cos(theta), cp.sin(theta)]
         )
+    

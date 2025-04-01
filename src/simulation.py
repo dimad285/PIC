@@ -6,7 +6,7 @@ import Render
 import Particles
 import Grid
 import MCC
-
+import time
 
 
 
@@ -163,19 +163,20 @@ def init_simulation(m, n, X, Y, N, dt, species):
 
 
 
-def step(particles:Particles.Particles2D, grid:Grid.Grid2D, dt, solver:Solvers.Solver, cross_sections, MAX_PARICLES, walls=None):
+def step(particles:Particles.Particles2D, grid:Grid.Grid2D, dt, solver:Solvers.Solver, cross_sections, MAX_PARICLES, walls=None, IONIZATION=True):
 
     particles.update_R(dt)
-    collisions.remove_out_of_bounds(particles, grid.X, grid.Y)
-    #print(particles.last_alive)
-    #collisions.detect_collisions_simple(particles, grid, *walls)
+    collisions.handle_wall_collisions(particles, grid, walls)
+    #collisions.remove_out_of_bounds(particles, grid.X, grid.Y)
     particles.update_bilinear_weights(grid)
-    #particles.sort_particles_sparse(grid.cell_count)
     grid.update_density(particles)
     solver.solve(grid)
     grid.update_E()
     particles.update_V(grid, dt)
-    #MCC.null_collision_method(particles, grid, 1e19, cross_sections, dt, MAX_PARICLES)
+    #MCC.null_collision_method(particles, grid, 1e18, cross_sections, dt, MAX_PARICLES, IONIZATION)
+    
+    #print(particles.collision_model[particles.part_type[:particles.last_alive]])
+
 
 
 def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, grid:Grid.Grid2D,
@@ -209,7 +210,8 @@ def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, gr
                     if bound_tuple != None:
                         renderer.update_boundaries(bound_tuple, (m, n))
                 case "V":
-                    renderer.update_particles(particles.V[:2], particles.part_type, cp.min(particles.V[0]), cp.max(particles.V[0]), cp.min(particles.V[1]), cp.max(particles.V[1]))
+                    renderer.update_particles(particles.V[:2, :particles.last_alive], particles.part_type[:particles.last_alive], 
+                                              cp.min(particles.V[0]), cp.max(particles.V[0]), cp.min(particles.V[1]), cp.max(particles.V[1]))
         
         case "heatmap":
             renderer.renderer_type = "heatmap"
@@ -281,5 +283,7 @@ def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, gr
         renderer.label_list.extend(['sim', 'frame', 'n', 'dt', 'flytime'])
 
     renderer.render(clear = not state['trace_enabled'], TEXT_RENDERING=state['text_enabled'], BOUNDARY_RENDERING = True)
+
+
 
 

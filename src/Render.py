@@ -269,7 +269,7 @@ def get_view_matrix(eye, center, up):
     return view
 
 class PICRenderer:
-    def __init__(self, width, height, fontfile, max_particles, renderer_type="particles", is_3d = False):
+    def __init__(self, width, height, fontfile, max_particles, renderer_type="particles", is_3d=False):
         self.width = width
         self.height = height
         self.fontfile = fontfile
@@ -362,8 +362,8 @@ class PICRenderer:
         out vec4 fragColor;
 
         void main() {
-            //if (vParticleType < 0.0) fragColor = vec4(0.0, 0.0, 0.0, 1.0);  
-            if (vParticleType == 1.0) fragColor = vec4(0.0, 1.0, 0.0, 1.0);  
+            if (vParticleType == 0.0) fragColor = vec4(0.0, 0.0, 0.0, 1.0);  
+            else if (vParticleType == 1.0) fragColor = vec4(0.0, 1.0, 0.0, 1.0);  
             else if (vParticleType == 2.0) fragColor = vec4(1.0, 0.5, 0.0, 1.0);  
             else if (vParticleType == 3.0) fragColor = vec4(1.0, 1.0, 0.0, 1.0);  
             else fragColor = vec4(1.0, 1.0, 1.0, 1.0);  
@@ -1030,7 +1030,23 @@ class PICRenderer:
         return glfw.window_should_close(self.window)
 
     def close(self):
+        """Properly cleanup CUDA and OpenGL resources"""
+        if self.particle_buffer is not None:
+            self.particle_buffer.unregister()
+            self.particle_buffer = None
+        
+        if hasattr(self, 'window') and self.window is not None:
+            glfw.make_context_current(self.window)
+            if hasattr(self, 'particle_vbo'):
+                glDeleteBuffers(1, [self.particle_vbo])
+            glfw.destroy_window(self.window)
+            self.window = None
+        
         glfw.terminate()
+
+    def __del__(self):
+        """Ensure resources are cleaned up if object is garbage collected"""
+        self.close()
 
 
 class Simple3DParticleRenderer:
