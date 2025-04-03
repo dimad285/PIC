@@ -1,21 +1,26 @@
 import cupy as cp
 import Consts
 
+
+
+
+
+
 class Particles2D():
     def __init__(self, N, cylindrical=False):
 
         self.cylindrical = cylindrical # 'cartesian' or 'cylindrical'
 
-        self.R = cp.zeros((2, N))
-        self.R_old = cp.zeros((2, N))
-        self.V = cp.zeros((3, N))   
-        self.part_type = cp.zeros(N, dtype=cp.int32) # particle type (0 - empty, 1 - proton, 2 - electron)
+        self.R = cp.zeros((2, N), dtype=cp.float32)
+        self.R_old = cp.zeros((2, N), dtype=cp.float32)
+        self.V = cp.zeros((3, N), dtype=cp.float32)   
+        self.part_type = cp.zeros(N, dtype=cp.int32) # particle type 
 
         self.weights = cp.zeros((4, N), dtype=cp.float32)
         self.indices = cp.zeros((4, N), dtype=cp.int32)
 
-        self.R_grid = cp.zeros(N, dtype=cp.int32) # particle positions in grid space (in which cell they are)
-        self.R_grid_new = cp.zeros(N, dtype=cp.int32) # particle positions in grid space (in which cell they are)
+        #self.R_grid = cp.zeros(N, dtype=cp.int32) # particle positions in grid space (in which cell they are)
+        #self.R_grid_new = cp.zeros(N, dtype=cp.int32) # particle positions in grid space (in which cell they are)
         self.active_cells = None
         self.cell_starts = None
         self.sorted_indices = None
@@ -188,7 +193,43 @@ class Particles2D():
             indices: Array to store cell indices for each particle (4 x last_alive)
         """
 
-        
+        bilinear_weights_kernel = cp.RawKernel(r'''
+        extern "C" __global__
+        void compute_bilinear_weights(
+            const double* R, double* weights, int* indices,
+            const double dx, const double dy,
+            const int nx, const int ny,
+            const int last_alive
+        ) {
+            int idx = blockDim.x * blockIdx.x + threadIdx.x;
+            if (idx >= last_alive) return;
+            
+            // Get particle position
+            double x = R[idx*2];
+            double y = R[idx*2 + 1];
+            
+            // Compute cell indices
+            int i = floor(x/dx);
+            int j = floor(y/dy);
+            
+            // Compute local coordinates
+            double xi = (x - i*dx)/dx;
+            double eta = (y - j*dy)/dy;
+            
+            // Compute weights
+            int base_idx = idx * 4;
+            weights[base_idx]   = (1-xi)*(1-eta);  // w00
+            weights[base_idx+1] = xi*(1-eta);      // w10
+            weights[base_idx+2] = (1-xi)*eta;      // w01
+            weights[base_idx+3] = xi*eta;          // w11
+            
+            // Store indices
+            indices[base_idx]   = j*nx + i;        // i00
+            indices[base_idx+1] = j*nx + (i+1);    // i10
+            indices[base_idx+2] = (j+1)*nx + i;    // i01
+            indices[base_idx+3] = (j+1)*nx + (i+1);// i11
+        }
+        ''', 'compute_bilinear_weights')
 
         if self.cylindrical:
 
@@ -234,7 +275,7 @@ class Particles2D():
             self.indices[2, :la] = z1 * m + r0  # top-left
             self.indices[3, :la] = z1 * m + r1  # top-right
 
-            self.R_grid[:la] = self.indices[0, :la] - self.indices[0, :la]//m
+            #self.R_grid[:la] = self.indices[0, :la] - self.indices[0, :la]//m
 
         else:
 
@@ -269,7 +310,7 @@ class Particles2D():
             self.indices[2, :la] = y1 * n + x0  # top-left
             self.indices[3, :la] = y1 * n + x1  # top-right
 
-            self.R_grid[:la] = self.indices[0, :la] - self.indices[0, :la]//m
+            #self.R_grid[:la] = self.indices[0, :la] - self.indices[0, :la]//m
 
     def sort_particles_sparse(self, num_cells):
         """
@@ -395,3 +436,15 @@ class Particles2D():
         self.V[1, la] = cp.random.uniform(-0.1, 0.1)
         self.part_type[la:la + n] = self.part_name.index(species)
         self.last_alive += n
+
+    update_r_kernel = cp.ElementwiseKernel(
+        'raw T R_old, raw T R_new, raw T V, T dt, int32 last_alive',
+        'T R_out',
+        '''
+        if (i < last_alive * 2) {  // 2 components (x,y)
+            R_out = R_new[i] + V[i] * dt;
+            R_old[i] = R_new[i];
+        }
+        ''',
+        'update_r_kernel'
+    )

@@ -112,6 +112,8 @@ def remove_out_of_bounds(particles:Particles.Particles2D, X_max, Y_max):
 
     particles.last_alive = count  # Update active particle count
 
+
+
 def handle_wall_collisions(
     particles:Particles.Particles2D,  # Particles2D object
     grid:Grid.Grid2D,  # Grid object
@@ -238,3 +240,153 @@ def profile_wall_collisions(particles, grid, walls):
     cp.cuda.Device(0).synchronize()  # Ensure synchronization before timing
     time = cupyx.time.repeat(handle_wall_collisions, (particles, grid, walls), n_repeat=10)
     print(time)
+
+
+def trace_particle_paths(particles:Particles.Particles2D, grid:Grid.Grid2D, max_steps):
+    Nx, Ny = grid.gridshape[0] - 1, grid.gridshape[1] - 1
+    num_particles = particles.last_alive
+   
+    # Preallocate array for storing traced indices (max_steps per particle)
+    traced_indices = cp.full((num_particles, max_steps), -1, dtype=cp.int32)
+   
+    # Define the kernel with super-sampling for accuracy
+    trace_kernel = cp.RawKernel(
+        """
+        extern "C" __global__ void trace_kernel(
+            const float* x0, const float* y0, const float* x1, const float* y1,
+            int* traced_indices, int Nx, int Ny, float dx, float dy, int max_steps, int num_particles
+        ) {
+            int idx = blockIdx.x * blockDim.x + threadIdx.x;
+            if (idx >= num_particles) return;
+            
+            // Load particle start and end positions
+            float x_start = x0[idx];
+            float y_start = y0[idx];
+            float x_end = x1[idx];
+            float y_end = y1[idx];
+            
+            // Super-sampling factor (more accurate tracing)
+            const int SUPER_SAMPLE = 10;
+            
+            // Safety epsilon to avoid floating point rounding issues
+            const float EPSILON = 1e-5f;
+            
+            // Convert to grid coordinates
+            float gx_start = x_start / dx;
+            float gy_start = y_start / dy;
+            float gx_end = x_end / dx;
+            float gy_end = y_end / dy;
+            
+            // Initial cell
+            int i_start = (int)floorf(gx_start);
+            int j_start = (int)floorf(gy_start);
+            int i_end = (int)floorf(gx_end);
+            int j_end = (int)floorf(gy_end);
+            
+            // Store start cell
+            traced_indices[idx * max_steps] = j_start * Nx + i_start;
+            
+            // If start and end are in same cell, we're done
+            if (i_start == i_end && j_start == j_end) {
+                return;
+            }
+            
+            // Calculate line parameters
+            float delta_x = gx_end - gx_start;
+            float delta_y = gy_end - gy_start;
+            float line_length = sqrtf(delta_x*delta_x + delta_y*delta_y);
+            
+            // Calculate steps needed (with super-sampling for accuracy)
+            int steps = (int)(line_length * SUPER_SAMPLE) + 1;
+            
+            // Initialize cell tracking
+            int step_count = 1;  // We already stored initial position
+            int prev_i = i_start;
+            int prev_j = j_start;
+            int last_added_cell = j_start * Nx + i_start;
+            
+            // Check if we have enough space in the buffer
+            if (steps > max_steps * 10) {
+                steps = max_steps * 10;  // Cap to avoid infinite loops
+            }
+            
+            // Trace the path
+            for (int s = 1; s <= steps && step_count < max_steps; s++) {
+                // Calculate position at this step (with super-sampling)
+                float t = (float)s / steps;
+                float gx = gx_start + t * delta_x;
+                float gy = gy_start + t * delta_y;
+                
+                // Get current cell with epsilon adjustment to handle boundary cases
+                int i = (int)floorf(gx + EPSILON);
+                int j = (int)floorf(gy + EPSILON);
+                
+                // Check boundaries
+                if (i < 0 || i >= Nx || j < 0 || j >= Ny) {
+                    continue;  // Skip this step but continue tracing
+                }
+                
+                // Check if we've moved to a new cell
+                int curr_cell = j * Nx + i;
+                if ((i != prev_i || j != prev_j) && curr_cell != last_added_cell) {
+                    traced_indices[idx * max_steps + step_count] = curr_cell;
+                    last_added_cell = curr_cell;
+                    step_count++;
+                    
+                    // Check if we've run out of storage space
+                    if (step_count >= max_steps - 1) {
+                        break;
+                    }
+                }
+                
+                prev_i = i;
+                prev_j = j;
+            }
+            
+            // Ensure end cell is included
+            int end_cell = j_end * Nx + i_end;
+            if (end_cell != last_added_cell && step_count < max_steps) {
+                traced_indices[idx * max_steps + step_count] = end_cell;
+                step_count++;
+            }
+        }
+        """,
+        "trace_kernel"
+    )
+   
+    # Launch kernel
+    threads_per_block = 256
+    blocks_per_grid = (num_particles + threads_per_block - 1) // threads_per_block
+    trace_kernel((blocks_per_grid,), (threads_per_block,), (
+        particles.R_old[0, :particles.last_alive], 
+        particles.R_old[1, :particles.last_alive],
+        particles.R[0, :particles.last_alive], 
+        particles.R[1, :particles.last_alive],
+        traced_indices, 
+        cp.int32(Nx), 
+        cp.int32(Ny), 
+        cp.float32(grid.dx),
+        cp.float32(grid.dy),
+        cp.int32(max_steps), 
+        cp.int32(num_particles)
+    ))
+    
+    return traced_indices
+
+
+
+# Function to detect collisions with walls
+def detect_collisions(traced_indices, wall_cells):
+    num_particles, max_steps = traced_indices.shape
+    collisions = cp.zeros(num_particles, dtype=cp.bool_)
+    
+    # Convert wall_cells to a set for fast lookup
+    wall_set = cp.asarray(wall_cells)
+    
+    # Check for consecutive wall collisions
+    for i in range(max_steps - 1):
+        valid = (traced_indices[:, i] != -1) & (traced_indices[:, i + 1] != -1)
+        collision_mask = valid & cp.isin(traced_indices[:, i], wall_set) & cp.isin(traced_indices[:, i + 1], wall_set)
+        collisions = collisions | collision_mask
+    
+    return collisions

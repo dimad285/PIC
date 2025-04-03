@@ -132,6 +132,12 @@ class SimulationManager:
         )
         self.setup_solver()
         self.setup_visualization()
+        simulation.init_step(
+            self.state.particles, 
+            self.state.grid, 
+            self.state.solver,
+            self.config.dt
+        )
 
         cross_section_elastic = MCC.read_cross_section('csf/Ar.txt')
         cross_section_ion = MCC.read_cross_section('csf/Ar+.txt')

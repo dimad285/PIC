@@ -162,11 +162,24 @@ def init_simulation(m, n, X, Y, N, dt, species):
     pass
 
 
+def init_step(particles:Particles.Particles2D, grid:Grid.Grid2D, solver:Solvers.Solver, dt:float):
+    particles.update_bilinear_weights(grid)
+    grid.update_density(particles)
+    solver.solve(grid)
+    grid.update_E()
+    particles.update_V(grid, -dt/2)
+
 
 def step(particles:Particles.Particles2D, grid:Grid.Grid2D, dt, solver:Solvers.Solver, cross_sections, MAX_PARICLES, walls=None, IONIZATION=True):
 
     particles.update_R(dt)
-    collisions.handle_wall_collisions(particles, grid, walls)
+    trace = collisions.trace_particle_paths(particles, grid, 5)
+    #print(trace)
+    #print(collisions.detect_collisions(trace, walls[0]))
+    collided = collisions.detect_collisions(trace, walls[0], grid.m-1)
+    print(collided)
+    #particles.remove(cp.nonzero(collided)[0])
+    #collisions.handle_wall_collisions(particles, grid, walls)
     #collisions.remove_out_of_bounds(particles, grid.X, grid.Y)
     particles.update_bilinear_weights(grid)
     grid.update_density(particles)

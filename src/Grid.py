@@ -185,3 +185,29 @@ class Grid2D():
         np.savetxt(filename, combined_data, header=header, comments='# ')
         
         print(f"Grid data successfully saved to {filename}")
+
+electric_field_kernel = cp.ElementwiseKernel(
+    'raw T phi, raw T Ex, raw T Ey, T dx, T dy, int32 nx, int32 ny',
+    'T Ex_out, T Ey_out',
+    '''
+    int j = i / nx;
+    int k = i % nx;
+    
+    if (j > 0 && j < ny-1) {
+        Ex_out = -(phi[i + 1] - phi[i - 1]) / (2 * dx);
+    } else if (j == 0) {
+        Ex_out = -(phi[i + 1] - phi[i]) / dx;
+    } else {
+        Ex_out = -(phi[i] - phi[i - 1]) / dx;
+    }
+    
+    if (k > 0 && k < nx-1) {
+        Ey_out = -(phi[i + nx] - phi[i - nx]) / (2 * dy);
+    } else if (k == 0) {
+        Ey_out = -(phi[i + nx] - phi[i]) / dy;
+    } else {
+        Ey_out = -(phi[i] - phi[i - nx]) / dy;
+    }
+    ''',
+    'compute_electric_field'
+)

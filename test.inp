@@ -10,7 +10,7 @@ System
 	UI = 1
 	RENDER = 1
 	RENDER_FRAME = 2
-	DIAGNOSTICS = 0
+	DIAGNOSTICS = 1
 	DIAG_TYPE = heatmap
 	bins = 128
 	SCREEN_WIDTH = 1080
@@ -42,7 +42,7 @@ Variables
 	Gie = 0.03
 	
 	//load
-	init_count = 1000000
+	init_count = 1
 	load_l1 = 0.26
 	load_l2 = 0.27
 	load_r1 = 0.25
