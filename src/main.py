@@ -148,7 +148,6 @@ class SimulationManager:
             boundaries = Boundaries.Boundaries(self.config.boundaries, self.state.grid)
             self.state.bound_tuple = boundaries.bound_tuple
             self.state.walls = boundaries.walls
-            print(self.state.walls[0])
             self.state.solver = Solvers.Solver(
                 self.config.solver_type, 
                 self.state.grid, 
@@ -243,12 +242,14 @@ class SimulationManager:
 
     
     def handle_visualization(self):
-        if not self.config.RENDER and self.state.framecounter == 1:
+        if not self.config.RENDER and self.state.framecounter == self.config.RENDER_FRAME:
             self.state.framecounter = 0
             print(f"t = {self.state.t:.2e}, sim_time = {self.state.sim_time:.2e}")
 
         self.state.framecounter += 1
-        if self.config.RENDER and self.state.framecounter == self.config.RENDER_FRAME:        
+        if self.config.RENDER and self.state.framecounter == self.config.RENDER_FRAME:      
+
+            start_draw = time.perf_counter()  
             simulation.draw(
                 self.state.renderer, 
                 self.state.gui.get_state(), 
@@ -262,7 +263,8 @@ class SimulationManager:
                 self.config.SCREEN_SIZE, 
                 self.state.bound_tuple
             )
-            self.state.frame_time = time.perf_counter() - self.state.sim_time
+            self.state.frame_time = time.perf_counter() - start_draw
+
             if self.state.renderer.should_close():
                 self.state.running = False
             self.state.framecounter = 0

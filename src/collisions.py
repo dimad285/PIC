@@ -374,19 +374,99 @@ def trace_particle_paths(particles:Particles.Particles2D, grid:Grid.Grid2D, max_
     return traced_indices
 
 
-
+'''
 # Function to detect collisions with walls
 def detect_collisions(traced_indices, wall_cells):
+    # Precompute wall mask
+    wall_mask = cp.isin(traced_indices, wall_cells)
+
+    # Valid steps: both current and next index are not -1
+    valid = (traced_indices[:, :-1] != -1) & (traced_indices[:, 1:] != -1)
+
+    # Wall collisions: both current and next step are wall cells
+    wall_collisions = wall_mask[:, :-1] & wall_mask[:, 1:]
+
+    # Combined collision mask
+    collision_mask = valid & wall_collisions
+
+    # Return indices of particles that collided
+    collided_indices = cp.nonzero(cp.any(collision_mask, axis=1))[0]
+
+    return collided_indices
+'''
+
+
+
+kernel_code = r'''
+extern "C" __global__
+void detect_collisions_kernel(
+    const int* traced_indices,
+    const bool* wall_lookup,
+    int* collided_indices,
+    int* collision_counter,
+    int num_particles,
+    int max_steps)
+{
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= num_particles) return;
+
+    for (int i = 0; i < max_steps - 1; ++i) {
+        int a = traced_indices[idx * max_steps + i];
+        int b = traced_indices[idx * max_steps + i + 1];
+
+        if (a == -1 || b == -1) continue;
+
+        if (wall_lookup[a] && wall_lookup[b]) {
+            // Atomically write this particle index into the output buffer
+            int write_idx = atomicAdd(collision_counter, 1);
+            collided_indices[write_idx] = idx;
+            return;  // Only record once per particle
+        }
+    }
+}
+'''
+
+detect_collisions_kernel = cp.RawKernel(kernel_code, 'detect_collisions_kernel')
+
+
+def detect_collisions(traced_indices, wall_cells, max_cell_id):
     num_particles, max_steps = traced_indices.shape
-    collisions = cp.zeros(num_particles, dtype=cp.bool_)
-    
-    # Convert wall_cells to a set for fast lookup
-    wall_set = cp.asarray(wall_cells)
-    
-    # Check for consecutive wall collisions
-    for i in range(max_steps - 1):
-        valid = (traced_indices[:, i] != -1) & (traced_indices[:, i + 1] != -1)
-        collision_mask = valid & cp.isin(traced_indices[:, i], wall_set) & cp.isin(traced_indices[:, i + 1], wall_set)
-        collisions = collisions | collision_mask
-    
-    return collisions
+
+    # Create a wall lookup table (bitmask)
+    wall_lookup = cp.zeros(max_cell_id + 1, dtype=cp.bool_)
+    wall_lookup[wall_cells] = True
+
+    # Flatten traced_indices for raw access
+    flat_traced = traced_indices.astype(cp.int32).ravel()
+
+    # Prepare output buffers
+    max_collisions = num_particles  # worst case: all collide
+    collided_indices = cp.full(max_collisions, -1, dtype=cp.int32)
+    collision_counter = cp.zeros(1, dtype=cp.int32)
+
+    # Launch kernel
+    threads_per_block = 256
+    blocks = (num_particles + threads_per_block - 1) // threads_per_block
+    detect_collisions_kernel(
+        (blocks,), (threads_per_block,),
+        (
+            flat_traced,
+            wall_lookup,
+            collided_indices,
+            collision_counter,
+            num_particles,
+            max_steps
+        )
+    )
+
+    # Slice valid results
+    num_collided = collision_counter.item()
+    return collided_indices[:num_collided]
+
+
+
+'''
+Do a check for gridless trjectorie intersection of two line segments.
+
+https://en.wikipedia.org/wiki/Line%E2%80%93line_intersection
+'''

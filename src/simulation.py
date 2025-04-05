@@ -9,6 +9,26 @@ import MCC
 import time
 
 
+total_energy_kernel = cp.RawKernel(r'''
+extern "C" __global__
+void compute_energy(
+    const float *Vx, const float *Vy,  // [max_particles]
+    const int *part_type,             // [max_particles]
+    const float *m_type,              // [num_types]
+    int last_alive)
+{   
+    float energy = 0;
+    int pid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pid >= max_particles) return;
+
+    int type = part_type[pid];
+    float mass = m_type[type];
+    float v_x = Vx[pid];
+    float v_y = Vy[pid];
+    energy += 0.5f * mass * (v_x * v_x + v_y * v_y);    
+    return energy;
+}
+''', 'compute_energy')
 
 
 class Diagnostics():
@@ -170,25 +190,21 @@ def init_step(particles:Particles.Particles2D, grid:Grid.Grid2D, solver:Solvers.
     particles.update_V(grid, -dt/2)
 
 
+
 def step(particles:Particles.Particles2D, grid:Grid.Grid2D, dt, solver:Solvers.Solver, cross_sections, MAX_PARICLES, walls=None, IONIZATION=True):
 
     particles.update_R(dt)
     trace = collisions.trace_particle_paths(particles, grid, 5)
-    #print(trace)
-    #print(collisions.detect_collisions(trace, walls[0]))
-    collided = collisions.detect_collisions(trace, walls[0], grid.m-1)
-    print(collided)
-    #particles.remove(cp.nonzero(collided)[0])
-    #collisions.handle_wall_collisions(particles, grid, walls)
-    #collisions.remove_out_of_bounds(particles, grid.X, grid.Y)
+    collided = collisions.detect_collisions(trace, walls[0], (grid.m-1)*(grid.n-1))
+    particles.R[:, collided] = particles.R_old[:, collided]
+    particles.remove(collided)
     particles.update_bilinear_weights(grid)
     grid.update_density(particles)
     solver.solve(grid)
     grid.update_E()
     particles.update_V(grid, dt)
-    #MCC.null_collision_method(particles, grid, 1e18, cross_sections, dt, MAX_PARICLES, IONIZATION)
+    MCC.null_collision_method(particles, grid, 1e18, cross_sections, dt, MAX_PARICLES, IONIZATION)
     
-    #print(particles.collision_model[particles.part_type[:particles.last_alive]])
 
 
 
@@ -292,7 +308,7 @@ def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, gr
         renderer.update_legend('frame', f"Frame time: {(frame_time)*1e6:.1f} mks", 110)
         renderer.update_legend('n', f"N: {particles.last_alive}", 140)
         renderer.update_legend('dt', f"dt: {dt:.2e}", 200)
-        renderer.update_legend('flytime', f"min flytime {(grid.dx / cp.max(cp.linalg.norm(particles.V))):.2e}", 230)
+        renderer.update_legend('flytime', f"min flytime {cp.min(cp.array([cp.float32(grid.dx) / cp.max(particles.V[0]), cp.float32(grid.dy) / cp.max(particles.V[1])])):.2e}", 230)
         renderer.label_list.extend(['sim', 'frame', 'n', 'dt', 'flytime'])
 
     renderer.render(clear = not state['trace_enabled'], TEXT_RENDERING=state['text_enabled'], BOUNDARY_RENDERING = True)

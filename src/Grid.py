@@ -2,6 +2,112 @@ import cupy as cp
 import Particles
 
 
+update_density_cylindrical = cp.RawKernel(r'''
+extern "C" __global__
+void update_density_cylindrical(
+    float *rho,                         // [num_grid_points]
+    const float *weights,              // [4, max_particles]
+    const int *indices,                // [4, max_particles]
+    const int *part_type,              // [max_particles]
+    const float *q_type,               // [num_types]
+    const float np2c,             // [max_particles]
+    const float np2c,             // [max_particles]
+    int last_alive,
+    int max_particles,
+    int grid_n_r,                      // radial dimension of grid (used for modulo)
+    float dr, float dz, float two_pi)
+{
+    int pid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pid >= last_alive) return;
+
+    int type = part_type[pid];
+    float charge = q_type[type] * np2c;
+
+    #pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        int idx = indices[i * max_particles + pid];     // flattened grid index
+        int r_idx = idx % grid_n_r;                  // radial index
+
+        float r = dr * r_idx;
+        if (r < 1e-6f) r = dr;  // avoid div by zero at r=0
+
+        float volume = (r + dr * 0.5f) * dr * dz * two_pi;
+        float w = weights[i * max_particles + pid] / volume;
+
+        atomicAdd(&rho[idx], charge * w);
+    }
+}
+''', 'update_density_cylindrical')
+
+update_density_cartesian = cp.RawKernel(r'''
+extern "C" __global__
+void update_density_cartesian(
+    float *rho,                         // [num_grid_points]
+    const float *weights,              // [4, max_particles]
+    const int *indices,                // [4, max_particles]
+    const int *part_type,              // [max_particles]
+    const float *q_type,               // [num_types]
+    const float np2c,             // [max_particles]
+    int last_alive,
+    int max_particles)
+{
+    int pid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pid >= last_alive) return;
+
+    int type = part_type[pid];
+    float charge = q_type[type] * np2c;
+    #pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        int idx = indices[i * max_particles + pid];
+        float w = weights[i * max_particles + pid];
+
+        atomicAdd(&rho[idx], charge * w);
+    }
+}
+''', 'update_density_cartesian')
+
+
+
+update_E_kenrel = cp.RawKernel(r'''
+extern "C" __global__
+void update_E(
+    const float *phi,   // [nx * ny]
+    float *E,           // [2, nx * ny] - output: E[0, :] = Ex, E[1, :] = Ey
+    int nx,
+    int ny,
+    float dx,
+    float dy)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int size = nx * ny;
+    if (idx >= size) return;
+
+    int ix = idx % nx;
+    int iy = idx / nx;
+
+    float Ex = 0.0f;
+    float Ey = 0.0f;
+
+    // Central differences, with forward/backward near edges
+    if (ix > 0 && ix < nx - 1)
+        Ex = -(phi[iy * nx + (ix + 1)] - phi[iy * nx + (ix - 1)]) / (2.0f * dx);
+    else if (ix == 0)
+        Ex = -(phi[iy * nx + (ix + 1)] - phi[iy * nx + ix]) / dx;
+    else if (ix == nx - 1)
+        Ex = -(phi[iy * nx + ix] - phi[iy * nx + (ix - 1)]) / dx;
+
+    if (iy > 0 && iy < ny - 1)
+        Ey = -(phi[(iy + 1) * nx + ix] - phi[(iy - 1) * nx + ix]) / (2.0f * dy);
+    else if (iy == 0)
+        Ey = -(phi[(iy + 1) * nx + ix] - phi[iy * nx + ix]) / dy;
+    else if (iy == ny - 1)
+        Ey = -(phi[iy * nx + ix] - phi[(iy - 1) * nx + ix]) / dy;
+                               
+
+    E[0 * size + idx] = Ex;
+    E[1 * size + idx] = Ey;
+}
+''', 'update_E')
 
 class Grid2D():
     def __init__(self, m, n, X, Y, cylindrical=False):
@@ -22,16 +128,18 @@ class Grid2D():
         self.cell_count = (m-1) * (n-1)
         self.domain = (X, Y)
 
-        self.rho = cp.zeros(m*n)
-        self.wall_rho = cp.zeros(m*n)
-        self.b = cp.zeros(m*n) # righr-hand side of the Poisson equation
-        self.phi = cp.zeros(m*n)
-        self.E = cp.zeros((2, m*n))
-        self.J = cp.zeros((2, m*n))
-        self.A = cp.zeros((2, m*n))
-        self.B = cp.zeros((2, m*n))
-        self.NGD = cp.ones(m*n)
+        self.rho = cp.zeros(m*n, dtype=cp.float32)
+        self.wall_rho = cp.zeros(m*n, dtype=cp.float32)
+        self.b = cp.zeros(m*n, dtype=cp.float32) # righr-hand side of the Poisson equation
+        self.phi = cp.zeros(m*n, dtype=cp.float32)
+        self.E = cp.zeros((2, m*n), dtype=cp.float32)
+        self.J = cp.zeros((2, m*n), dtype=cp.float32)
+        self.A = cp.zeros((2, m*n), dtype=cp.float32)
+        self.B = cp.zeros((2, m*n), dtype=cp.float32)
+        self.NGD = cp.ones(m*n, dtype=cp.float32)
 
+
+    '''
     def update_E(self):
         # Reshape phi into a 2D grid using Fortran-order for better y-direction performance
         phi_grid = cp.reshape(self.phi, self.gridshape, order='C')  # Use Fortran-order ('F') for column-major memory layout
@@ -46,63 +154,61 @@ class Grid2D():
         # Flatten the results and assign to E
         self.E[0, :] = E_x.flatten()  # Flatten using the same Fortran-order to match the reshaping
         self.E[1, :] = E_y.flatten()
+    '''
+
+    def update_E(self):
+
+        nx, ny = self.gridshape
+        dx, dy = self.cell_size
+
+        threads_per_block = 256
+        blocks_per_grid = (nx * ny + threads_per_block - 1) // threads_per_block
+
+        update_E_kenrel(
+            (blocks_per_grid,), (threads_per_block,),
+            (self.phi, self.E, nx, ny, cp.float32(dx), cp.float32(dy))
+        )
+    
 
     def update_density(self, particles:Particles.Particles2D):
-        """
-        Updates charge density field using precomputed bilinear interpolation.
-        """
+        last_alive = particles.last_alive
+        block_size = 256
+        grid_size = (last_alive + block_size - 1) // block_size
         self.rho.fill(0.0)
-        l_a = particles.last_alive
 
         if self.cylindrical:
-            charge_values = particles.q_type[particles.part_type[:l_a]] * particles.np2c
-
-            # Get radial indices of the interpolation points
-            r_idx_0 = particles.indices[0, :l_a] % self.gridshape[0]  # bottom-left
-            r_idx_1 = particles.indices[1, :l_a] % self.gridshape[0]  # bottom-right
-            r_idx_2 = particles.indices[2, :l_a] % self.gridshape[0]  # top-left
-            r_idx_3 = particles.indices[3, :l_a] % self.gridshape[0]  # top-right
-
-            # Compute radial positions (cell-centered approximation)
-            r0 = r_idx_0 * self.cell_size[0]
-            r1 = r_idx_1 * self.cell_size[0]
-            r2 = r_idx_2 * self.cell_size[0]
-            r3 = r_idx_3 * self.cell_size[0]
-
-            # Avoid division by zero at r = 0
-            r0 = cp.maximum(r0, self.dy)
-            r1 = cp.maximum(r1, self.dy)
-            r2 = cp.maximum(r2, self.dy)
-            r3 = cp.maximum(r3, self.dy)
-
-            # Compute cell volume elements V = (r_{i+1} - r_i) * dz * 2π
-            dr = self.cell_size[0]
-            dz = self.cell_size[1]
-            volume_0 = (r0 + dr / 2) * dr * dz * (2 * cp.pi)
-            volume_1 = (r1 + dr / 2) * dr * dz * (2 * cp.pi)
-            volume_2 = (r2 + dr / 2) * dr * dz * (2 * cp.pi)
-            volume_3 = (r3 + dr / 2) * dr * dz * (2 * cp.pi)
-
-            # Scale weights by radial volume elements
-            weight_0 = particles.weights[0, :l_a] / volume_0
-            weight_1 = particles.weights[1, :l_a] / volume_1
-            weight_2 = particles.weights[2, :l_a] / volume_2
-            weight_3 = particles.weights[3, :l_a] / volume_3
-
-            # Deposit charge density with volume correction
-            cp.add.at(self.rho, particles.indices[0, :l_a], charge_values * weight_0)
-            cp.add.at(self.rho, particles.indices[1, :l_a], charge_values * weight_1)
-            cp.add.at(self.rho, particles.indices[2, :l_a], charge_values * weight_2)
-            cp.add.at(self.rho, particles.indices[3, :l_a], charge_values * weight_3)
-
+            update_density_cylindrical(
+                (grid_size,), (block_size,),
+                (
+                    self.rho,
+                    particles.weights,
+                    particles.indices,
+                    particles.part_type,
+                    particles.q_type,
+                    cp.float32(particles.np2c),
+                    particles.last_alive,
+                    particles.N,
+                    self.gridshape[0],
+                    self.cell_size[0],
+                    self.cell_size[1],
+                    2 * cp.pi
+                )
+            )
         else:
-            charge_values = particles.q_type[particles.part_type[:l_a]] * particles.np2c
-            dV = self.cell_size[0] * self.cell_size[1]
-            cp.add.at(self.rho, particles.indices[0, :l_a], charge_values * particles.weights[0, :l_a] / dV)
-            cp.add.at(self.rho, particles.indices[1, :l_a], charge_values * particles.weights[1, :l_a] / dV)
-            cp.add.at(self.rho, particles.indices[2, :l_a], charge_values * particles.weights[2, :l_a] / dV)
-            cp.add.at(self.rho, particles.indices[3, :l_a], charge_values * particles.weights[3, :l_a] / dV)
 
+            update_density_cartesian(
+                (grid_size,), (block_size,),
+                (
+                    self.rho,
+                    particles.weights,
+                    particles.indices,
+                    particles.part_type,
+                    particles.q_type,
+                    cp.float32(particles.np2c),
+                    particles.last_alive,
+                    particles.N
+                )
+            )
 
     def update_J(self, particles:Particles.Particles2D):
         pass
@@ -186,28 +292,3 @@ class Grid2D():
         
         print(f"Grid data successfully saved to {filename}")
 
-electric_field_kernel = cp.ElementwiseKernel(
-    'raw T phi, raw T Ex, raw T Ey, T dx, T dy, int32 nx, int32 ny',
-    'T Ex_out, T Ey_out',
-    '''
-    int j = i / nx;
-    int k = i % nx;
-    
-    if (j > 0 && j < ny-1) {
-        Ex_out = -(phi[i + 1] - phi[i - 1]) / (2 * dx);
-    } else if (j == 0) {
-        Ex_out = -(phi[i + 1] - phi[i]) / dx;
-    } else {
-        Ex_out = -(phi[i] - phi[i - 1]) / dx;
-    }
-    
-    if (k > 0 && k < nx-1) {
-        Ey_out = -(phi[i + nx] - phi[i - nx]) / (2 * dy);
-    } else if (k == 0) {
-        Ey_out = -(phi[i + nx] - phi[i]) / dy;
-    } else {
-        Ey_out = -(phi[i] - phi[i - nx]) / dy;
-    }
-    ''',
-    'compute_electric_field'
-)

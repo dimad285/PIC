@@ -6,11 +6,11 @@ The most basic OOPIC Pro input file possible.
 
 System
 {
-	MAX_PARTICLES = 2000000
+	MAX_PARTICLES = 1100000
 	UI = 1
 	RENDER = 1
-	RENDER_FRAME = 2
-	DIAGNOSTICS = 1
+	RENDER_FRAME = 1
+	DIAGNOSTICS = 0
 	DIAG_TYPE = heatmap
 	bins = 128
 	SCREEN_WIDTH = 1080
@@ -31,20 +31,20 @@ Variables
 
 
 	//grid
-	Kmax = 32
-  	Jmax = 32
+	Kmax = 128
+  	Jmax = 128
 	
 	//time
-	baseTime = 1.0e-9
+	baseTime = 1.0e-10
   	
 	//species
 	A = 40
 	Gie = 0.03
 	
 	//load
-	init_count = 1
-	load_l1 = 0.26
-	load_l2 = 0.27
+	init_count = 1000000
+	load_l1 = 0.3
+	load_l2 = 0.31
 	load_r1 = 0.25
 	load_r2 = 0.35
 }
@@ -106,6 +106,7 @@ j2 = Jmax*3/4
 k1 = Kmax/4
 k2 = Kmax*3/4
 }
+
 
 Equipotential
 {

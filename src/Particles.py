@@ -2,14 +2,207 @@ import cupy as cp
 import Consts
 
 
+cylindrical_bilinear_kernel = cp.RawKernel(r'''
+extern "C" __global__
+void cylindrical_bilinear_weights(
+    const float *Rx, const float *Ry,  // R components are separate arrays
+    float dr, float dz, 
+    int m, int n, 
+    int last_alive, 
+    float *weights, 
+    int *indices)
+{
+    int pid = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (pid < last_alive) {
+        float r = Rx[pid] / dr;      // Radial position in grid units
+        float z = Ry[pid] / dz;      // Axial position in grid units
+        
+        // Ensure r and z are finite
+        if (!isfinite(r)) r = 0.0f;
+        if (!isfinite(z)) z = 0.0f;
+        
+        // Clamp r and z to valid ranges
+        r = max(0.0f, min(r, float(m) - 1.0f - 1e-6f));
+        z = max(0.0f, min(z, float(n) - 1.0f - 1e-6f));
+        
+        // Compute integer indices of the lower-left grid point
+        int r0 = floorf(r);
+        int z0 = floorf(z);
+        
+        // Ensure valid indexing
+        r0 = max(0, min(r0, m - 2));  // Ensure r0+1 is valid
+        z0 = max(0, min(z0, n - 2));  // Ensure z0+1 is valid
+        
+        // Compute upper indices (clamped at max index)
+        int r1 = min(r0 + 1, m - 1);
+        int z1 = min(z0 + 1, n - 1);
+        
+        // Compute fractional distances for weighting
+        float wr = r - r0;
+        float wz = z - z0;
+        float wr_1 = 1.0f - wr;
+        float wz_1 = 1.0f - wz;
+        
+        // Safety checks
+        wr = max(0.0f, min(1.0f, wr));
+        wz = max(0.0f, min(1.0f, wz));
+        wr_1 = max(0.0f, min(1.0f, wr_1));
+        wz_1 = max(0.0f, min(1.0f, wz_1));
+        
+        // Adjust weights for cylindrical volume elements (∝ r)
+        float r_factor_0 = (r0 + 0.5f) * dr;  // Approximate radius at r0
+        float r_factor_1 = (r1 + 0.5f) * dr;  // Approximate radius at r1
+        
+        // Avoid division by zero
+        float norm_factor = 1.0f;
+        float sum = r_factor_0 + r_factor_1;
+        if (sum > 1e-6f) {
+            norm_factor = 1.0f / sum;
+        }
+        
+        // Compute interpolation weights with radial scaling
+        weights[pid]                  = wr_1 * wz_1 * r_factor_0 * norm_factor;  // bottom-left
+        weights[pid + last_alive]     = wr   * wz_1 * r_factor_1 * norm_factor;  // bottom-right
+        weights[pid + last_alive * 2] = wr_1 * wz   * r_factor_0 * norm_factor;  // top-left
+        weights[pid + last_alive * 3] = wr   * wz   * r_factor_1 * norm_factor;  // top-right
+        
+        // Ensure weights are finite and in [0,1]
+        weights[pid]                  = max(0.0f, min(1.0f, weights[pid]));
+        weights[pid + last_alive]     = max(0.0f, min(1.0f, weights[pid + last_alive]));
+        weights[pid + last_alive * 2] = max(0.0f, min(1.0f, weights[pid + last_alive * 2]));
+        weights[pid + last_alive * 3] = max(0.0f, min(1.0f, weights[pid + last_alive * 3]));
+        
+        // Compute 1D indices for array access (checking for integer overflow)
+        long idx_bl = (long)z0 * (long)m + (long)r0;
+        long idx_br = (long)z0 * (long)m + (long)r1;
+        long idx_tl = (long)z1 * (long)m + (long)r0;
+        long idx_tr = (long)z1 * (long)m + (long)r1;
+        
+        // Ensure indices are within valid range
+        int max_idx = m * n - 1;
+        indices[pid]                  = max(0, min((int)idx_bl, max_idx));  // bottom-left
+        indices[pid + last_alive]     = max(0, min((int)idx_br, max_idx));  // bottom-right
+        indices[pid + last_alive * 2] = max(0, min((int)idx_tl, max_idx));  // top-left
+        indices[pid + last_alive * 3] = max(0, min((int)idx_tr, max_idx));  // top-right
+    }
+}
+''', 'cylindrical_bilinear_weights')
+
+# Kernel code for Cartesian coordinates with correct memory layout
+cartesian_bilinear_kernel = cp.RawKernel(r'''
+extern "C" __global__
+void cartesian_bilinear_weights(
+    const float *Rx, const float *Ry,
+    float dx, float dy,
+    int m, int n,
+    int last_alive,
+    int max_particles,
+    float *weights,
+    int *indices)
+{
+    int pid = blockIdx.x * blockDim.x + threadIdx.x;
+   
+    if (pid < last_alive) {
+        // Convert to grid coordinates
+        float x = Rx[pid] / dx;
+        float y = Ry[pid] / dy;
+       
+        // Handle NaN or inf values
+        if (!isfinite(x)) x = 0.0f;
+        if (!isfinite(y)) y = 0.0f;
+       
+        // Clamp positions to valid grid range
+        x = max(0.0f, min(x, float(m - 1)));
+        y = max(0.0f, min(y, float(n - 1)));
+       
+        // Get integer cell coordinates
+        int x0 = int(floorf(x));
+        int y0 = int(floorf(y));
+        
+        // Calculate neighbor coordinates
+        int x1 = min(x0 + 1, m - 1);
+        int y1 = min(y0 + 1, n - 1);
+        
+        // Calculate interpolation weights
+        float wx = x - float(x0);
+        float wy = y - float(y0);
+        float wx_1 = 1.0f - wx;
+        float wy_1 = 1.0f - wy;
+        
+        weights[0 * max_particles + pid] = wx_1 * wy_1;
+        weights[1 * max_particles + pid] = wx * wy_1;
+        weights[2 * max_particles + pid] = wx_1 * wy;
+        weights[3 * max_particles + pid] = wx * wy;
+
+        indices[0 * max_particles + pid] = y0 * n + x0;
+        indices[1 * max_particles + pid] = y0 * n + x1;
+        indices[2 * max_particles + pid] = y1 * n + x0;
+        indices[3 * max_particles + pid] = y1 * n + x1;
+    }
+}
+''', 'cartesian_bilinear_weights')
+
+update_v_kernel = cp.RawKernel(r'''
+extern "C" __global__
+void update_particle_velocity(
+    float *Vx, float *Vy,              // [max_particles]
+    const float *weights,             // [4, max_particles]
+    const int *indices,               // [4, max_particles]
+    const float *Ex, const float *Ey, // [num_grid_points]
+    const int *part_type,             // [max_particles]
+    const float *q_type,              // [num_types]
+    const float *m_type_inv,          // [num_types]
+    float dt,
+    int last_alive,
+    int max_particles)
+{
+    int pid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pid >= last_alive) return;
+
+    float wx0 = weights[0 * max_particles + pid];
+    float wx1 = weights[1 * max_particles + pid];
+    float wx2 = weights[2 * max_particles + pid];
+    float wx3 = weights[3 * max_particles + pid];
+
+    int ix0 = indices[0 * max_particles + pid];
+    int ix1 = indices[1 * max_particles + pid];
+    int ix2 = indices[2 * max_particles + pid];
+    int ix3 = indices[3 * max_particles + pid];
+
+    float Epx = wx0 * Ex[ix0] + wx1 * Ex[ix1] + wx2 * Ex[ix2] + wx3 * Ex[ix3];
+    float Epy = wx0 * Ey[ix0] + wx1 * Ey[ix1] + wx2 * Ey[ix2] + wx3 * Ey[ix3];
+
+    int type = part_type[pid];
+    float k = dt * q_type[type] * m_type_inv[type];
+                               
+    Vx[pid] += k * Epx;
+    Vy[pid] += k * Epy;
+}
+''', 'update_particle_velocity')
 
 
+update_r_kernel = cp.RawKernel(r'''
+extern "C" __global__
+void update_particle_position(
+    float *R_old, float *R_new, float *V, float dt, int last_alive, int max_particles)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= last_alive) return;
+
+    R_old[idx] = R_new[idx];
+    R_old[idx + max_particles] = R_new[idx + max_particles];
+    R_new[idx] += V[idx] * dt;
+    R_new[idx + max_particles] += V[idx + max_particles] * dt;
+}
+''', 'update_particle_position')
 
 
 class Particles2D():
     def __init__(self, N, cylindrical=False):
 
         self.cylindrical = cylindrical # 'cartesian' or 'cylindrical'
+        self.N = N
 
         self.R = cp.zeros((2, N), dtype=cp.float32)
         self.R_old = cp.zeros((2, N), dtype=cp.float32)
@@ -35,7 +228,7 @@ class Particles2D():
         self.collision_model = cp.array([128], dtype=cp.int32)
 
         self.cross_sections = [None]
-        self.species_count = []
+        self.species_count = 0
 
         self.min_vx = 0
         self.max_vx = 0
@@ -55,10 +248,24 @@ class Particles2D():
         self.q_type = cp.append(self.q_type, species_charge)
         self.collision_model = cp.append(self.collision_model, collision_model)
 
-    def update_R(self, dt):
-        self.R_old[:, :self.last_alive] = self.R[:, :self.last_alive]
-        self.R[:, :self.last_alive] += self.V[:2, :self.last_alive] * dt
+        self.m_type = cp.asarray(self.m_type, dtype=cp.float32)
+        self.m_type_inv = cp.asarray(self.m_type_inv, dtype=cp.float32)
+        self.q_type = cp.asarray(self.q_type, dtype=cp.float32)
+        self.collision_model = cp.asarray(self.collision_model, dtype=cp.int32)
 
+        self.species_count += 1
+
+    def update_R(self, dt):
+        
+        block_size = 256
+        grid_size = (self.last_alive + block_size - 1) // block_size
+        update_r_kernel(
+            (grid_size,), (block_size,),
+            (self.R_old, self.R, self.V,
+            cp.float32(dt), cp.int32(self.last_alive), cp.int32(self.N))
+        )
+    
+    '''
     def update_V(self, grid, dt):
         """
         Updates particle velocities using precomputed interpolation weights.
@@ -69,13 +276,32 @@ class Particles2D():
         # Compute interpolated electric field components
         Ex = cp.sum(grid.E[0, self.indices[:, :la]] * self.weights[:, :la], axis=0)
         Ey = cp.sum(grid.E[1, self.indices[:, :la]] * self.weights[:, :la], axis=0)
-        
         # Update velocities
         k = dt * self.q_type[self.part_type[:la]] * self.m_type_inv[self.part_type[:la]]
         
         self.V[0, :la] += Ex * k
         self.V[1, :la] += Ey * k
+    
+    '''
 
+    def update_V(self, grid, dt):
+
+        block_size = 256
+        grid_size = (self.last_alive + block_size - 1) // block_size
+
+        update_v_kernel(
+            (grid_size,), (block_size,),
+            (
+                self.V[0], self.V[1],
+                self.weights, self.indices,
+                grid.E[0], grid.E[1],
+                self.part_type,
+                self.q_type, self.m_type_inv,
+                cp.float32(dt), self.last_alive, self.N
+            )
+        )
+    
+    
 
     def boris_pusher_cartesian(self, grid, dt):
         """
@@ -180,137 +406,43 @@ class Particles2D():
         self.V[1, mask] -= (self.V[2, mask] ** 2 / r[mask]) * dt
     
 
+
     def update_bilinear_weights(self, grid):
-        """
-        Computes bilinear interpolation weights and cell indices for particles in place.
+        # Choose block size for optimal occupancy
+        threads_per_block = 256
+        blocks = (self.last_alive + threads_per_block - 1) // threads_per_block
         
-        Args:
-            R: Particle positions array (2 x N)
-            dx, dy: Grid spacing
-            gridsize: Grid dimensions (m, n)
-            last_alive: Number of active particles
-            weights: Array to store interpolation weights for each particle (4 x last_alive)
-            indices: Array to store cell indices for each particle (4 x last_alive)
-        """
-
-        bilinear_weights_kernel = cp.RawKernel(r'''
-        extern "C" __global__
-        void compute_bilinear_weights(
-            const double* R, double* weights, int* indices,
-            const double dx, const double dy,
-            const int nx, const int ny,
-            const int last_alive
-        ) {
-            int idx = blockDim.x * blockIdx.x + threadIdx.x;
-            if (idx >= last_alive) return;
-            
-            // Get particle position
-            double x = R[idx*2];
-            double y = R[idx*2 + 1];
-            
-            // Compute cell indices
-            int i = floor(x/dx);
-            int j = floor(y/dy);
-            
-            // Compute local coordinates
-            double xi = (x - i*dx)/dx;
-            double eta = (y - j*dy)/dy;
-            
-            // Compute weights
-            int base_idx = idx * 4;
-            weights[base_idx]   = (1-xi)*(1-eta);  // w00
-            weights[base_idx+1] = xi*(1-eta);      // w10
-            weights[base_idx+2] = (1-xi)*eta;      // w01
-            weights[base_idx+3] = xi*eta;          // w11
-            
-            // Store indices
-            indices[base_idx]   = j*nx + i;        // i00
-            indices[base_idx+1] = j*nx + (i+1);    // i10
-            indices[base_idx+2] = (j+1)*nx + i;    // i01
-            indices[base_idx+3] = (j+1)*nx + (i+1);// i11
-        }
-        ''', 'compute_bilinear_weights')
-
+        # Extract parameters
+        gridshape = grid.gridshape
+        cell_size = grid.cell_size
+        last_alive = self.last_alive
+        
+        # Call the appropriate kernel based on coordinate system
         if self.cylindrical:
-
-            m, n = grid.gridshape  # (radial, axial)
-            dr, dz = grid.cell_size
-            la = self.last_alive  # Number of active particles
-            # Normalize positions
-            r = self.R[0, :la] / dr  # Radial position in grid units
-            z = self.R[1, :la] / dz  # Axial position in grid units
-
-            # Compute integer indices of the lower-left grid point
-            r0 = cp.floor(r).astype(cp.int32)
-            z0 = cp.floor(z).astype(cp.int32)
-            
-            # Ensure valid indexing (r0 must be at least 0, z0 at least 0)
-            r0 = cp.maximum(r0, 0)
-            z0 = cp.maximum(z0, 0)
-            
-            # Compute upper indices (clamped at max index)
-            r1 = cp.minimum(r0 + 1, m - 1)
-            z1 = cp.minimum(z0 + 1, n - 1)
-
-            # Compute fractional distances for weighting
-            wr = r - r0
-            wz = z - z0
-            wr_1 = 1.0 - wr
-            wz_1 = 1.0 - wz
-            
-            # Adjust weights for cylindrical volume elements (∝ r)
-            r_factor_0 = (r0 + 0.5) * dr  # Approximate radius at r0
-            r_factor_1 = (r1 + 0.5) * dr  # Approximate radius at r1
-            norm_factor = 1.0 / (r_factor_0 + r_factor_1)  # Normalize weights
-            
-            # Compute interpolation weights with radial scaling
-            self.weights[0, :la] = wr_1 * wz_1 * r_factor_0 * norm_factor  # bottom-left
-            self.weights[1, :la] = wr * wz_1 * r_factor_1 * norm_factor    # bottom-right
-            self.weights[2, :la] = wr_1 * wz * r_factor_0 * norm_factor    # top-left
-            self.weights[3, :la] = wr * wz * r_factor_1 * norm_factor      # top-right
-
-            # Compute 1D indices for array access
-            self.indices[0, :la] = z0 * m + r0  # bottom-left
-            self.indices[1, :la] = z0 * m + r1  # bottom-right
-            self.indices[2, :la] = z1 * m + r0  # top-left
-            self.indices[3, :la] = z1 * m + r1  # top-right
-
-            #self.R_grid[:la] = self.indices[0, :la] - self.indices[0, :la]//m
-
+            m, n = gridshape  # (radial, axial)
+            dr, dz = cell_size
+            cylindrical_bilinear_kernel(
+                (blocks,), (threads_per_block,),
+                (self.R[0, :last_alive], self.R[1, :last_alive],  # Pass R components separately
+                cp.float32(dr), cp.float32(dz), 
+                cp.int32(m), cp.int32(n), 
+                cp.int32(last_alive), 
+                self.weights, 
+                self.indices)
+            )
         else:
-
-            m, n = grid.gridshape
-            dx, dy = grid.cell_size
-            la = self.last_alive
-            # Normalize positions
-            x = self.R[0, :la] / dx
-            y = self.R[1, :la] / dy
-            
-            # Calculate indices
-            x0 = cp.floor(x).astype(cp.int32)
-            y0 = cp.floor(y).astype(cp.int32)
-            x1 = cp.minimum(x0 + 1, m - 1)
-            y1 = cp.minimum(y0 + 1, n - 1)
-
-            # Calculate weights
-            wx = x - x0
-            wy = y - y0
-            wx_1 = 1.0 - wx
-            wy_1 = 1.0 - wy
-            
-            # Update weights in place
-            self.weights[0, :la] = wx_1 * wy_1  # bottom-left
-            self.weights[1, :la] = wx * wy_1    # bottom-right
-            self.weights[2, :la] = wx_1 * wy    # top-left
-            self.weights[3, :la] = wx * wy      # top-right
-            
-            # Update indices in place
-            self.indices[0, :la] = y0 * n + x0  # bottom-left
-            self.indices[1, :la] = y0 * n + x1  # bottom-right
-            self.indices[2, :la] = y1 * n + x0  # top-left
-            self.indices[3, :la] = y1 * n + x1  # top-right
-
-            #self.R_grid[:la] = self.indices[0, :la] - self.indices[0, :la]//m
+            m, n = gridshape
+            dx, dy = cell_size
+            cartesian_bilinear_kernel(
+                (blocks,), (threads_per_block,),
+                (self.R[0], self.R[1],  # Pass R components separately
+                cp.float32(dx), cp.float32(dy), 
+                cp.int32(m), cp.int32(n), 
+                cp.int32(last_alive), 
+                cp.int32(self.N),
+                self.weights, 
+                self.indices)
+            )
 
     def sort_particles_sparse(self, num_cells):
         """
@@ -396,7 +528,7 @@ class Particles2D():
         self.cell_starts = cell_starts
         self.sorted_indices = sorted_indices
 
-    
+
     def remove(self, indices):
         """
         Remove particles by swapping with the last active particle and decreasing the active particle counter.
@@ -404,6 +536,7 @@ class Particles2D():
         num_remove = indices.size
         if num_remove == 0:
             return 0
+        
         
         # Get indices of last alive particles to swap with
         swap_idx = cp.arange(self.last_alive - num_remove, self.last_alive)
@@ -418,6 +551,7 @@ class Particles2D():
         self.last_alive -= num_remove
         
         #self.part_type[indices] = 0
+
 
     def uniform_particle_load(self, x, y, dx, dy, n):
         la = self.last_alive
