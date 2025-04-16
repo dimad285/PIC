@@ -64,24 +64,6 @@ void main() {
 }
 """
 
-# Fragment shader for particles
-PARTICLE_FRAGMENT_SHADER = """
-#version 330
-in float vParticleType;
-out vec4 fragColor;
-
-vec3 getColor(float type) {
-    if (type == 0.0) return vec3(0.0, 0.0, 0.0);  // Black
-    else if (type == 1.0) return vec3(0.0, 1.0, 0.0);  // Green
-    else if (type == 2.0) return vec3(1.0, 0.5, 0.0);  // Orange
-    else if (type == 3.0) return vec3(1.0, 1.0, 0.0);  // Yellow
-    else return vec3(1.0, 1.0, 1.0);  // White (default)
-}
-
-void main() {
-    fragColor = vec4(getColor(vParticleType), 1.0);
-}
-"""
 
 
 PARTICLE_FRAGMENT_SHADER_3D = """
@@ -206,6 +188,9 @@ void main() {
 }
 """
 
+
+
+
 class CharacterSlot:
     def __init__(self, texture, glyph):
         self.texture = texture
@@ -280,7 +265,29 @@ class PICRenderer:
         self.fov = np.radians(60)
         self.particle_count = max_particles
         self.label_list = []
+        
+        # Initialize downsampling configuration first
+        self.max_displayed_particles = 100000  # Maximum particles to render
+        self.downsample_threshold = 50000     # Threshold when to start downsampling
+        self.current_displayed_particles = 0   # Track how many particles we're actually displaying
+        self.target_frame_time = 1/60         # Target 60 FPS
+        self.frame_time_history = []
+        self.adaptive_sampling = True
+        
         print(f'Initializing {renderer_type} PIC Renderer...')
+
+        # Rest of initialization
+        self.use_orthographic = False
+        self.angle_phi = 0.0
+        self.angle_theta = 0.0
+        self.distance = 10.0
+        self.left = -0.5
+        self.right = 0.5
+        self.bottom = -0.5
+        self.top = 0.5
+        self.near = 0.1
+        self.far = 100.0
+        self.eye = np.array([0.0, 0.0, 10.0])
         
         if not glfw.init():
             raise Exception("GLFW initialization failed")
@@ -292,21 +299,11 @@ class PICRenderer:
 
         glfw.make_context_current(self.window)
 
-        # Initialize rendering based on renderer type
-        '''
-        if self.renderer_type == "particles":
-            self.init_particle_rendering()
-        elif self.renderer_type == "heatmap":
-            self.init_heatmap_rendering()
-        elif self.renderer_type == "line_plot":
-            self.init_line_plot_rendering()
-        '''
-
+        # Initialize all rendering components
         self.init_particle_rendering()
         self.init_heatmap_rendering()
         self.init_line_plot_rendering()
         self.init_surface_rendering()
-        # Initialize text rendering
         self.init_text_rendering()
         self.init_boundary_rendering()
 
@@ -315,6 +312,15 @@ class PICRenderer:
         self.line_plots = {}  # Dictionary to store multiple line plots
         self.line_colors = {}  # Dictionary to store colors for each line plot
         self.num_line_points = 0  # Initialize num_line_pointss
+
+        self.last_mouse_pos = None
+        self.mouse_buttons = {'left': False, 'right': False, 'middle': False}
+        
+        # Set up input callbacks
+        glfw.set_cursor_pos_callback(self.window, self._handle_mouse_move)
+        glfw.set_mouse_button_callback(self.window, self._handle_mouse_button)
+        glfw.set_scroll_callback(self.window, self._handle_scroll)
+        glfw.set_key_callback(self.window, self._handle_keyboard)
 
     def set_renderer_type(self, renderer_type, is_3d=False):
         """Set the renderer type and whether it's 2D or 3D."""
@@ -328,11 +334,10 @@ class PICRenderer:
     def set_camera(self, eye):
         self.eye = eye
 
-    def init_particle_rendering(self, is_3d=False):
-        # Initialize shaders
-        self.is_3d = is_3d
+    def init_particle_rendering(self):
 
-        particle_vertex_shader = """
+
+        PARTICLE_VERTEX_SHADER = """
         #version 330
         in vec3 position;
         in float type;
@@ -340,23 +345,23 @@ class PICRenderer:
         uniform mat4 projection;
         uniform mat4 modelView;
         void main() {
-            gl_Position = projection * modelView * vec4(position, 1.0);
+            gl_Position = projection * modelview * vec4(position, 1.0);
             vParticleType = type;
         }
-        """ if is_3d else """
+        """ if self.is_3d else """
         #version 330
         in vec2 position;
         in float type;  
         out float vParticleType;  
         uniform mat4 projection;
-        uniform mat4 modelView;
+        uniform mat4 modelview;
         void main() {
-            gl_Position = projection * modelView * vec4(position, 0.0, 1.0);
+            gl_Position = projection * modelview * vec4(position, 0.0, 1.0);
             vParticleType = type; 
         }
         """
 
-        particle_fragment_shader = """
+        PARTICLE_FRAGMENT_SHADER = """
         #version 330
         in float vParticleType; 
         out vec4 fragColor;
@@ -369,29 +374,44 @@ class PICRenderer:
             else fragColor = vec4(1.0, 1.0, 1.0, 1.0);  
         }
         """
-
-        vertex_shader = shaders.compileShader(particle_vertex_shader, GL_VERTEX_SHADER)
-        fragment_shader = shaders.compileShader(particle_fragment_shader, GL_FRAGMENT_SHADER)
+        # Compile shaders
+        vertex_shader = shaders.compileShader(PARTICLE_VERTEX_SHADER, GL_VERTEX_SHADER)
+        fragment_shader = shaders.compileShader(PARTICLE_FRAGMENT_SHADER, GL_FRAGMENT_SHADER)
         self.particle_shader_program = shaders.compileProgram(vertex_shader, fragment_shader)
-
-        # Get uniform locations for projection and modelView matrices
-        self.projection_loc = glGetUniformLocation(self.particle_shader_program, "projection")
-        self.modelview_loc = glGetUniformLocation(self.particle_shader_program, "modelView")
-
-        # Initialize particle buffer with CUDA/OpenGL interop
-        particle_vertex_size = 4 if is_3d else 3
         
+        # Get uniform locations
+        self.particle_mvp_loc = glGetUniformLocation(self.particle_shader_program, "MVP")
+        self.projection_loc = glGetUniformLocation(self.particle_shader_program, "projection")
+        self.modelview_loc = glGetUniformLocation(self.particle_shader_program, "modelview")
+        
+        # Setup vertex attributes
+        particle_vertex_size = 4 if self.is_3d else 3  # [x, y, type] or [x, y, z, type]
         self.particle_vertex_size = particle_vertex_size
         
-        vertex_bytes = self.particle_count * particle_vertex_size * np.float32().nbytes
-
+        # Allocate buffer for max_displayed_particles
+        vertex_bytes = self.max_displayed_particles * particle_vertex_size * np.float32().nbytes
         flags = cudart.cudaGraphicsRegisterFlags.cudaGraphicsRegisterFlagsWriteDiscard
-
+        
         self.particle_vbo = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self.particle_vbo)
         glBufferData(GL_ARRAY_BUFFER, vertex_bytes, None, GL_DYNAMIC_DRAW)
         
-        self.particle_buffer = CudaOpenGLMappedArray(np.float32, (self.particle_count, particle_vertex_size), self.particle_vbo, flags)
+        self.particle_buffer = CudaOpenGLMappedArray(
+            np.float32, 
+            (self.max_displayed_particles, particle_vertex_size), 
+            self.particle_vbo, 
+            flags
+        )
+        
+        # Setup vertex attributes
+        glEnableVertexAttribArray(0)  # position
+        glEnableVertexAttribArray(1)  # type
+        if self.is_3d:
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, particle_vertex_size * 4, ctypes.c_void_p(0))
+            glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, particle_vertex_size * 4, ctypes.c_void_p(12))
+        else:
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, particle_vertex_size * 4, ctypes.c_void_p(0))
+            glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, particle_vertex_size * 4, ctypes.c_void_p(8))
 
     def init_text_rendering(self):
         vertex_shader = shaders.compileShader(TEXT_VERTEX_SHADER, GL_VERTEX_SHADER)
@@ -522,33 +542,62 @@ class PICRenderer:
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
 
-    def update_particles(self, particle_positions, particle_types:cp.ndarray, x_min, x_max, y_min, y_max):
+    def update_particles(self, particle_positions, particle_types: cp.ndarray, x_min, x_max, y_min, y_max):
         """
-        Update particle positions and types on the GPU using CuPy.
+        Update particle positions with intelligent downsampling.
         
-        :param particle_positions: CuPy array of shape (2, n) for positions
+        :param particle_positions: CuPy array of shape (n, 2) where each row is (x, y)
         :param particle_types: CuPy array of shape (n,) for particle types
         """
-        num_particles = particle_positions.shape[1]
+        num_particles = particle_positions.shape[0]
+        
+        # Determine if downsampling is needed
+        if num_particles > self.downsample_threshold:
+            # Calculate sampling rate to match max_displayed_particles
+            sample_rate = self.max_displayed_particles / num_particles
+            step = max(1, int(1 / sample_rate))
+            
+            # Create index mask for systematic sampling
+            indices = cp.arange(0, num_particles, step, dtype=cp.int32)
+            
+            # Apply sampling
+            particle_positions = particle_positions[indices]
+            particle_types = particle_types[indices]
+            
+            num_particles = len(indices)
+            self.current_displayed_particles = num_particles
+        else:
+            self.current_displayed_particles = num_particles
+
+        # Safety check - ensure we don't exceed buffer size
+        if num_particles > self.max_displayed_particles:
+            # If we somehow got more particles than buffer size, do additional downsampling
+            sample_rate = self.max_displayed_particles / num_particles
+            step = max(1, int(1 / sample_rate))
+            indices = cp.arange(0, num_particles, step, dtype=cp.int32)
+            particle_positions = particle_positions[indices]
+            particle_types = particle_types[indices]
+            num_particles = len(indices)
+            self.current_displayed_particles = num_particles
+
+        # Continue with normal rendering for the sampled particles
         assert num_particles <= self.particle_count, (
             f"Number of particles ({num_particles}) exceeds buffer size ({self.particle_count})."
         )
-        
+        assert particle_positions.shape[1] == 2, "particle_positions must be of shape (n, 2)"
+
         # Normalize particle positions to OpenGL space [-1, 1]
-        normalized_positions = 2.0 * (particle_positions - x_min) / (x_max - x_min) - 1.0
-        
-        # Create interleaved data with position and type
-        interleaved_data = cp.zeros((num_particles, self.particle_vertex_size), dtype=cp.float32)
-        #print(normalized_positions.T.shape, interleaved_data[:, :self.particle_vertex_size].shape)
-        interleaved_data[:, :self.particle_vertex_size-1] = normalized_positions.T
-        interleaved_data[:, self.particle_vertex_size-1] = particle_types.astype(cp.float32)
-        #print(particle_types)
-        
+        normalized_positions = cp.empty_like(particle_positions)
+        normalized_positions[:, 0] = 2.0 * (particle_positions[:, 0] - x_min) / (x_max - x_min) - 1.0
+        normalized_positions[:, 1] = 2.0 * (particle_positions[:, 1] - y_min) / (y_max - y_min) - 1.0
+
+        # Create interleaved data [x, y, type]
+        interleaved_data = cp.empty((num_particles, self.particle_vertex_size), dtype=cp.float32)
+        interleaved_data[:, :2] = normalized_positions
+        interleaved_data[:, 2] = particle_types.astype(cp.float32)
+
         with self.particle_buffer as particle_data:
-            #print(interleaved_data.shape, particle_data[:num_particles].shape)
-            particle_data[:num_particles] = interleaved_data[:, :3]
-
-
+            particle_data[:num_particles] = interleaved_data
 
     def update_particles_3d(self, particle_positions):
         gl_positions = 2.0 * particle_positions - 1.0
@@ -595,52 +644,58 @@ class PICRenderer:
             })
 
     def update_heatmap(self, data_1d_cupy, rows, cols):
-        # Reshape the CuPy 1D data to 2D
+        # Reshape the CuPy 1D data to 2D (rows, cols)
         heatmap_data_cupy = data_1d_cupy.reshape((rows, cols))
         
         # Normalize intensity values between 0 and 1
         heatmap_min = cp.min(heatmap_data_cupy)
         heatmap_max = cp.max(heatmap_data_cupy)
-        heatmap_data_cupy_normalized = (heatmap_data_cupy - heatmap_min) / (heatmap_max - heatmap_min)
+        # Avoid division by zero if all values are the same
+        if heatmap_max == heatmap_min:
+            heatmap_data_cupy_normalized = cp.zeros_like(heatmap_data_cupy)
+        else:
+            heatmap_data_cupy_normalized = (heatmap_data_cupy - heatmap_min) / (heatmap_max - heatmap_min)
         
         # Create vertex data for quads using CuPy operations
+        # Use proper dimensions for vertex layout
         x = cp.linspace(-1, 1, cols)
         y = cp.linspace(-1, 1, rows)
-        X, Y = cp.meshgrid(x, y)
+        X, Y = cp.meshgrid(x, y)  # This gives X with shape (rows, cols)
         
-        # Create vertices for two triangles per grid cell
+        # Create vertices array with correct dimensions (rows-1, cols-1, 6, 3)
         vertices = cp.zeros((rows-1, cols-1, 6, 3), dtype=cp.float32)
         
-        vertices[:,:,0,0] = X[:-1,:-1]  # x1
-        vertices[:,:,0,1] = Y[:-1,:-1]  # y1
-        vertices[:,:,0,2] = heatmap_data_cupy_normalized[:-1,:-1]  # i1
+        # First triangle (bottom-left, bottom-right, top-left)
+        vertices[:,:,0,0] = X[:-1,:-1]  # Bottom-left x
+        vertices[:,:,0,1] = Y[:-1,:-1]  # Bottom-left y
+        vertices[:,:,0,2] = heatmap_data_cupy_normalized[:-1,:-1]  # Bottom-left intensity
         
-        vertices[:,:,1,0] = X[:-1,1:]   # x2
-        vertices[:,:,1,1] = Y[:-1,:-1]  # y1
-        vertices[:,:,1,2] = heatmap_data_cupy_normalized[:-1,1:]  # i2
+        vertices[:,:,1,0] = X[:-1,1:]   # Bottom-right x
+        vertices[:,:,1,1] = Y[:-1,1:]   # Bottom-right y
+        vertices[:,:,1,2] = heatmap_data_cupy_normalized[:-1,1:]  # Bottom-right intensity
         
-        vertices[:,:,2,0] = X[1:,:-1]   # x1
-        vertices[:,:,2,1] = Y[1:,:-1]   # y2
-        vertices[:,:,2,2] = heatmap_data_cupy_normalized[1:,:-1]  # i3
+        vertices[:,:,2,0] = X[1:,:-1]   # Top-left x
+        vertices[:,:,2,1] = Y[1:,:-1]   # Top-left y
+        vertices[:,:,2,2] = heatmap_data_cupy_normalized[1:,:-1]  # Top-left intensity
         
-        vertices[:,:,3,0] = X[1:,:-1]   # x1
-        vertices[:,:,3,1] = Y[1:,:-1]   # y2
-        vertices[:,:,3,2] = heatmap_data_cupy_normalized[1:,:-1]  # i3
+        # Second triangle (top-left, bottom-right, top-right)
+        vertices[:,:,3,0] = X[1:,:-1]   # Top-left x
+        vertices[:,:,3,1] = Y[1:,:-1]   # Top-left y
+        vertices[:,:,3,2] = heatmap_data_cupy_normalized[1:,:-1]  # Top-left intensity
         
-        vertices[:,:,4,0] = X[:-1,1:]   # x2
-        vertices[:,:,4,1] = Y[:-1,:-1]  # y1
-        vertices[:,:,4,2] = heatmap_data_cupy_normalized[:-1,1:]  # i2
+        vertices[:,:,4,0] = X[:-1,1:]   # Bottom-right x
+        vertices[:,:,4,1] = Y[:-1,1:]   # Bottom-right y
+        vertices[:,:,4,2] = heatmap_data_cupy_normalized[:-1,1:]  # Bottom-right intensity
         
-        vertices[:,:,5,0] = X[1:,1:]    # x2
-        vertices[:,:,5,1] = Y[1:,:-1]   # y2
-        vertices[:,:,5,2] = heatmap_data_cupy_normalized[1:,1:]   # i4
+        vertices[:,:,5,0] = X[1:,1:]    # Top-right x
+        vertices[:,:,5,1] = Y[1:,1:]    # Top-right y
+        vertices[:,:,5,2] = heatmap_data_cupy_normalized[1:,1:]   # Top-right intensity
         
         # Reshape to a 2D array of vertices
         vertices_cupy = vertices.reshape(-1, 3)
         
         # Transfer data from GPU (CuPy) to CPU (NumPy) for OpenGL
         vertices_cpu = cp.asnumpy(vertices_cupy)
-
         # Update the OpenGL buffer with CPU data
         glBindBuffer(GL_ARRAY_BUFFER, self.heatmap_vbo)
         glBufferData(GL_ARRAY_BUFFER, vertices_cpu.nbytes, vertices_cpu, GL_STATIC_DRAW)
@@ -726,29 +781,48 @@ class PICRenderer:
         def generate_wireframe_vertices(X, Y, Z):
             rows, cols = X.shape
             
-            # Total number of lines: horizontal + vertical
-            # Horizontal lines: rows * (cols-1)
-            # Vertical lines: cols * (rows-1)
-            total_lines = rows * (cols-1) + cols * (rows-1)
+            # Pre-allocate arrays for horizontal and vertical lines
+            # For horizontal lines
+            h_indices_row = np.repeat(np.arange(rows), cols-1)
+            h_indices_col_start = np.tile(np.arange(cols-1), rows)
+            h_indices_col_end = h_indices_col_start + 1
             
-            # Pre-allocate the entire wireframe array at once
-            wireframe_lines = np.zeros((total_lines, 6), dtype=np.float32)
-            line_count = 0
-
-            # Horizontal lines (across each row)
-            for i in range(rows):
-                for j in range(cols - 1):
-                    wireframe_lines[line_count, :3] = [X[i,j], Y[i,j], Z[i,j]]
-                    wireframe_lines[line_count, 3:] = [X[i,j+1], Y[i,j+1], Z[i,j+1]]
-                    line_count += 1
-
-            # Vertical lines (down each column)
-            for j in range(cols):
-                for i in range(rows - 1):
-                    wireframe_lines[line_count, :3] = [X[i,j], Y[i,j], Z[i,j]]
-                    wireframe_lines[line_count, 3:] = [X[i+1,j], Y[i+1,j], Z[i+1,j]]
-                    line_count += 1
-
+            # For vertical lines
+            v_indices_col = np.repeat(np.arange(cols), rows-1)
+            v_indices_row_start = np.tile(np.arange(rows-1), cols)
+            v_indices_row_end = v_indices_row_start + 1
+            
+            # Extract start and end points for horizontal lines
+            h_start_x = X[h_indices_row, h_indices_col_start]
+            h_start_y = Y[h_indices_row, h_indices_col_start]
+            h_start_z = Z[h_indices_row, h_indices_col_start]
+            h_end_x = X[h_indices_row, h_indices_col_end]
+            h_end_y = Y[h_indices_row, h_indices_col_end]
+            h_end_z = Z[h_indices_row, h_indices_col_end]
+            
+            # Extract start and end points for vertical lines
+            v_start_x = X[v_indices_row_start, v_indices_col]
+            v_start_y = Y[v_indices_row_start, v_indices_col]
+            v_start_z = Z[v_indices_row_start, v_indices_col]
+            v_end_x = X[v_indices_row_end, v_indices_col]
+            v_end_y = Y[v_indices_row_end, v_indices_col]
+            v_end_z = Z[v_indices_row_end, v_indices_col]
+            
+            # Combine horizontal and vertical line start/end points
+            start_points = np.column_stack([
+                np.hstack([h_start_x, v_start_x]),
+                np.hstack([h_start_y, v_start_y]),
+                np.hstack([h_start_z, v_start_z])
+            ])
+            
+            end_points = np.column_stack([
+                np.hstack([h_end_x, v_end_x]),
+                np.hstack([h_end_y, v_end_y]),
+                np.hstack([h_end_z, v_end_z])
+            ])
+            
+            # Create the final wireframe vertices
+            wireframe_lines = np.hstack([start_points, end_points]).astype(np.float32)
             return wireframe_lines
         
         vertices = generate_vertices(X, Y, Z)
@@ -765,7 +839,6 @@ class PICRenderer:
         glBindBuffer(GL_ARRAY_BUFFER, self.surface_wireframe_vbo)
         glBufferData(GL_ARRAY_BUFFER, wireframe_vertices.nbytes, wireframe_vertices, GL_STATIC_DRAW)
         glBindBuffer(GL_ARRAY_BUFFER, 0)
-
 
     def update_boundaries(self, boundary_segments, grid_shape):
         """
@@ -795,20 +868,16 @@ class PICRenderer:
         
         self.num_boundary_vertices = len(boundary_lines)
 
-
     def render_particles(self, projection_matrix=None, modelview_matrix=None):
         """
         Render particles using the updated buffer.
-
-        :param projection_matrix: 4x4 numpy array representing the projection matrix. Defaults to identity.
-        :param modelview_matrix: 4x4 numpy array representing the model-view matrix. Defaults to identity.
         """
+        glUseProgram(self.particle_shader_program)
+
         if projection_matrix is None:
             projection_matrix = np.eye(4, dtype=np.float32)
         if modelview_matrix is None:
             modelview_matrix = np.eye(4, dtype=np.float32)
-
-        glUseProgram(self.particle_shader_program)
 
         # Pass projection and modelView matrices to the shader
         glUniformMatrix4fv(self.projection_loc, 1, GL_FALSE, projection_matrix)
@@ -820,9 +889,8 @@ class PICRenderer:
         # Position attribute
         position_attrib = glGetAttribLocation(self.particle_shader_program, "position")
         glEnableVertexAttribArray(position_attrib)
-        stride = (self.particle_vertex_size) * np.float32().nbytes  # Position + type
-        #print(stride.shape)
-        glVertexAttribPointer(position_attrib, self.particle_vertex_size, GL_FLOAT, GL_FALSE, stride, None)
+        stride = (self.particle_vertex_size) * np.float32().nbytes
+        glVertexAttribPointer(position_attrib, self.particle_vertex_size-1, GL_FLOAT, GL_FALSE, stride, None)
         
         # Type attribute
         type_attrib = glGetAttribLocation(self.particle_shader_program, "type")
@@ -835,8 +903,6 @@ class PICRenderer:
         glDisableVertexAttribArray(position_attrib)
         glDisableVertexAttribArray(type_attrib)
         glBindBuffer(GL_ARRAY_BUFFER, 0)
-
-
 
     def render_particles_3d(self, fov=10.0, camera_position=(0.0, 0.0, 1.0), target=(0.0, 0.0, 0.0)):
         """
@@ -869,33 +935,41 @@ class PICRenderer:
     def render_text(self, text, x, y, scale, color):
         # Use the text shader program
         glUseProgram(self.text_shader_program)
-        
-        # Set text color
+
+        # Set text color (normalize to 0.0 - 1.0)
         glUniform3f(glGetUniformLocation(self.text_shader_program, "textColor"),
-                    color[0] / 255, color[1] / 255, color[2] / 255)
-        
+                    color[0] / 255.0, color[1] / 255.0, color[2] / 255.0)
+
         # Enable blending for transparency
         glActiveTexture(GL_TEXTURE0)
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        
+
         # Bind the VAO
         glBindVertexArray(self.text_vao)
-        
+
         # Prepare vertex buffer for batch rendering
         all_vertices = []
         for c in text:
-            ch = self.Characters[c]
+            ch = self.Characters.get(c)
+            if ch is None:
+                continue  # Skip unknown characters
+
             w, h = ch.textureSize
             w *= scale
             h *= scale
 
             # Compute vertices for this character
-            vertices = _get_rendering_buffer(x, y, w, h)
+            vertices = _get_rendering_buffer(x + ch.bearing[0] * scale, 
+                                            y - (ch.textureSize[1] - ch.bearing[1]) * scale, 
+                                            w, h)
             all_vertices.append(vertices)
 
             # Advance the cursor position for the next character
-            x += (ch.advance >> 6) * scale
+            x += (ch.advance >> 6) * scale  # Bitshift by 6 to get pixel value (1/64th of a pixel)
+
+        if not all_vertices:
+            return  # Nothing to render
 
         # Flatten the vertices into a single array
         all_vertices = np.vstack(all_vertices).astype(np.float32)
@@ -907,18 +981,18 @@ class PICRenderer:
         # Render each character
         offset = 0
         for c in text:
-            ch = self.Characters[c]
+            ch = self.Characters.get(c)
+            if ch is None:
+                continue
 
-            # Bind the character's texture
             glBindTexture(GL_TEXTURE_2D, ch.texture)
-
-            # Draw the character
             glDrawArrays(GL_TRIANGLES, offset, 6)
             offset += 6
 
         # Cleanup
         glBindVertexArray(0)
         glBindTexture(GL_TEXTURE_2D, 0)
+        glDisable(GL_BLEND)
 
     def render_heatmap(self):
         glUseProgram(self.heatmap_shader_program)
@@ -1048,185 +1122,109 @@ class PICRenderer:
         """Ensure resources are cleaned up if object is garbage collected"""
         self.close()
 
-
-class Simple3DParticleRenderer:
-    def __init__(self, width=800, height=600, use_orthographic=False):
-
-        self.width = width
-        self.height = height
-        # Initialize GLFW
-        if not glfw.init():
-            raise Exception("GLFW can't be initialized")
+    def _handle_mouse_move(self, window, xpos, ypos):
+        if self.last_mouse_pos is None:
+            self.last_mouse_pos = (xpos, ypos)
+            return
+            
+        dx = xpos - self.last_mouse_pos[0]
+        dy = ypos - self.last_mouse_pos[1]
         
-        # Create a windowed mode window and its OpenGL context
-        self.window = glfw.create_window(width, height, "3D Particle Renderer", None, None)
-        if not self.window:
-            glfw.terminate()
-            raise Exception("GLFW window can't be created")
-        
-        # Make the window's context current
-        glfw.make_context_current(self.window)
-        glEnable(GL_DEPTH_TEST)  # Enable depth testing for 3D
+        # Rotate camera with left mouse button
+        if self.mouse_buttons['left']:
+            self.angle_phi -= dx * 0.005
+            self.angle_theta = max(min(self.angle_theta + dy * 0.005, np.pi/2), -np.pi/2)
+            
+        # Pan camera with right mouse button
+        if self.mouse_buttons['right']:
+            self.left += dx * 0.01
+            self.top += dy * 0.01
+            self.right += dx * 0.01
+            self.bottom += dy * 0.01
+            
+        self.last_mouse_pos = (xpos, ypos)
 
-        # Compile shaders
-        self.shader_program = self.load_shader()
-        
-        # Set up default camera parameters
-        self.use_orthographic = use_orthographic
-        self.fov = 45.0  # Only used if `use_orthographic` is False
+    def _handle_mouse_button(self, window, button, action, mods):
+        if button == glfw.MOUSE_BUTTON_LEFT:
+            self.mouse_buttons['left'] = action == glfw.PRESS
+        elif button == glfw.MOUSE_BUTTON_RIGHT:
+            self.mouse_buttons['right'] = action == glfw.PRESS
+        elif button == glfw.MOUSE_BUTTON_MIDDLE:
+            self.mouse_buttons['middle'] = action == glfw.PRESS
+            
+        if action == glfw.RELEASE:
+            self.last_mouse_pos = None
+
+    def _handle_scroll(self, window, xoffset, yoffset):
+        # Zoom with mouse wheel
+        zoom_factor = 0.1
+        if self.use_orthographic:
+            scale = 1.0 - yoffset * zoom_factor
+            self.left *= scale
+            self.right *= scale
+            self.top *= scale
+            self.bottom *= scale
+        else:
+            self.distance = max(1.0, self.distance * (1.0 - yoffset * zoom_factor))
+
+    def _handle_keyboard(self, window, key, scancode, action, mods):
+        if action != glfw.PRESS and action != glfw.REPEAT:
+            return
+            
+        if key == glfw.KEY_R:  # Reset view
+            self.reset_camera()
+        elif key == glfw.KEY_P:  # Toggle projection mode
+            self.use_orthographic = not self.use_orthographic
+        elif key == glfw.KEY_UP:
+            self.fov = max(10.0, self.fov - 5.0)
+        elif key == glfw.KEY_DOWN:
+            self.fov = min(120.0, self.fov + 5.0)
+
+    def reset_camera(self):
+        """Reset camera to default parameters"""
         self.angle_phi = 0.0
         self.angle_theta = 0.0
         self.distance = 10.0
-
-        # Orthographic projection parameters
+        self.fov = 45.0
         self.left = -0.5
         self.right = 0.5
         self.bottom = -0.5
         self.top = 0.5
-        self.near = 0.1
-        self.far = 100.0
 
-        # Initialize buffer objects
-        self.particle_VBO = None
-        self.num_particles = 0  # Number of particles to render
+    def resize_particle_buffer(self, new_max_particles):
+        """Resize the OpenGL/CUDA buffer when max_displayed_particles changes significantly"""
+        # Delete old buffer
+        glDeleteBuffers(1, [self.particle_vbo])
+        self.particle_buffer = None
 
-    def load_shader(self):
-        vertex_shader_src = """
-        #version 330 core
-        layout (location = 0) in vec3 position;
-        uniform mat4 projection;
-        uniform mat4 view;
-        uniform mat4 model;
-        void main() {
-            vec4 worldPosition = model * vec4(position, 1.0);
-            gl_Position = projection * view * worldPosition;
-            gl_PointSize = 5.0;
-        }
-        """
-        fragment_shader_src = """
-        #version 330 core
-        out vec4 fragColor;
-        void main() {
-            fragColor = vec4(1.0, 1.0, 1.0, 1.0);
-        }
-        """
-        # Compile and link shaders
-        vertex_shader = shaders.compileShader(vertex_shader_src, GL_VERTEX_SHADER)
-        fragment_shader = shaders.compileShader(fragment_shader_src, GL_FRAGMENT_SHADER)
-        shader_program = shaders.compileProgram(vertex_shader, fragment_shader)
-        return shader_program
+        # Create new buffer
+        vertex_bytes = new_max_particles * self.particle_vertex_size * np.float32().nbytes
+        flags = cudart.cudaGraphicsRegisterFlags.cudaGraphicsRegisterFlagsWriteDiscard
 
-    def setup_particles(self, particle_positions):
-        # Flatten the particle positions and convert to float32
-        particle_vertices = particle_positions.flatten().astype(np.float32)
-        self.num_particles = particle_positions.shape[0]  # Store number of particles
+        self.particle_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.particle_vbo)
+        glBufferData(GL_ARRAY_BUFFER, vertex_bytes, None, GL_DYNAMIC_DRAW)
         
-        # Generate and bind buffer
-        self.particle_VBO = glGenBuffers(1)
-        glBindBuffer(GL_ARRAY_BUFFER, self.particle_VBO)
-        glBufferData(GL_ARRAY_BUFFER, particle_vertices.nbytes, particle_vertices, GL_STATIC_DRAW)
+        self.particle_buffer = CudaOpenGLMappedArray(
+            np.float32, 
+            (new_max_particles, self.particle_vertex_size), 
+            self.particle_vbo, 
+            flags
+        )
         
-        glEnableVertexAttribArray(0)
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, None)
-    
-    def render(self):
-        # Clear the screen
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        self.max_displayed_particles = new_max_particles
 
-        # Set up projection matrix (orthographic or perspective)
-        if self.use_orthographic:
-            projection = glm.ortho(-self.distance, self.distance, -self.distance, self.distance, self.near, self.far)
-        else:
-            projection = glm.perspective(glm.radians(self.fov), self.width / self.height, 0.1, 100.0)
+    def adjust_particle_count(self, current_frame_time):
+        """Dynamically adjust max_displayed_particles based on frame time"""
+        if not self.adaptive_sampling:
+            return
+            
+        old_max = self.max_displayed_particles
         
-        # Set up view matrix
-        view = glm.lookAt(glm.vec3(self.distance * np.cos(self.angle_phi), 
-                                   self.distance * np.sin(self.angle_phi), 
-                                   self.distance * np.sin(self.angle_theta)), 
-                          glm.vec3(0.0, 0.0, 0.0), glm.vec3(0.0, 0.0, 1.0))
-        model = glm.mat4(1.0)
-
-        # Use the shader program and set matrices
-        glUseProgram(self.shader_program)
-        proj_loc = glGetUniformLocation(self.shader_program, "projection")
-        view_loc = glGetUniformLocation(self.shader_program, "view")
-        model_loc = glGetUniformLocation(self.shader_program, "model")
+        # ... existing adjustment code ...
         
-        glUniformMatrix4fv(proj_loc, 1, GL_FALSE, glm.value_ptr(projection))
-        glUniformMatrix4fv(view_loc, 1, GL_FALSE, glm.value_ptr(view))
-        glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm.value_ptr(model))
-        
-        # Render particles
-        glBindBuffer(GL_ARRAY_BUFFER, self.particle_VBO)
-        glDrawArrays(GL_POINTS, 0, self.num_particles)  # Use self.num_particles
-        
-        # Swap buffers
-        glfw.swap_buffers(self.window)
-    
-    def update_camera(self, fov=None, angle_phi=None, angle_theta=None, distance=None):
-        # Update camera parameters
-        if fov is not None: self.fov = fov
-        if angle_phi is not None: self.angle_phi = angle_phi
-        if angle_theta is not None: self.angle_theta = angle_theta
-        if distance is not None: self.distance = distance
-
-    def should_close(self):
-        return glfw.window_should_close(self.window)
-    
-    def close(self):
-        glfw.terminate()
+        # If max_displayed_particles changed significantly, resize buffer
+        if abs(old_max - self.max_displayed_particles) / old_max > 0.5:  # 50% change
+            self.resize_particle_buffer(self.max_displayed_particles)
 
 
-
-# Example usage
-if __name__ == "__main__":
-    width, height = 800, 600
-    fontfile = "C:\\Windows\\Fonts\\Arial.ttf"  # Adjust this path as needed
-    renderer = PICRenderer(width, height, fontfile)
-    
-    n = 10000
-    particle_positions = cp.random.rand(2, n).astype(cp.float32)
-    particle_types = cp.random.randint(0, 4, n).astype(cp.float32)
-    
-    frame = 0
-    start_time = glfw.get_time()
-    while not renderer.should_close():
-        # Update particle positions (simple circular motion)
-        t = frame * 0.01
-        particle_positions[0] = cp.cos(t + particle_positions[0] * 2 * cp.pi) * 0.5 + 0.5
-        particle_positions[1] = cp.sin(t + particle_positions[1] * 2 * cp.pi) * 0.5 + 0.5
-        
-        renderer.update_particles(particle_positions, particle_types)
-        
-        # Update text content
-        renderer.update_text('frame_counter', {
-            'text': f"Frame: {frame}",
-            'x': 10,
-            'y': 30,
-            'scale': 0.5,
-            'color': (255, 255, 255)
-        })
-        
-        renderer.update_text('particle_count', {
-            'text': f"Particles: {n}",
-            'x': 10,
-            'y': 60,
-            'scale': 0.5,
-            'color': (200, 200, 0)
-        })
-        
-        # Calculate and display FPS
-        current_time = glfw.get_time()
-        fps = frame / (current_time - start_time)
-        renderer.update_text('fps', {
-            'text': f"FPS: {fps:.2f}",
-            'x': width - 150,
-            'y': 30,
-            'scale': 0.5,
-            'color': (0, 255, 0)
-        })
-        
-        renderer.render()
-        frame += 1
-    
-    renderer.close()

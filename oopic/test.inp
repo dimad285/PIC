@@ -1,0 +1,136 @@
+basic
+{
+The most basic OOPIC Pro input file possible.
+}
+Variables
+{
+	//physics
+	U = 100
+
+	//grid
+	Kmax = 128
+  	Jmax = 128
+	
+	//time
+	baseTime = 1.0e-9
+  	
+	
+}
+
+Region
+{
+
+Grid
+{
+	Geometry = 1
+	J = Jmax		
+	K = Kmax		
+	x1s = 0.0
+	x1f = 1.0
+	x2s = 0.0	
+	x2f = 1.0
+}
+
+Control // Control block 
+{ 
+	dt = baseTime
+	ElectrostaticFlag = 4
+}
+
+
+Species  
+{
+	name = electrons
+	m = 9.11E-31
+	q = -1.60E-19
+	collisionModel = 0
+} 
+
+CylindricalAxis
+{
+	j1 = 0
+	k1 = 0 
+	j2 = Jmax
+	k2 = 0
+	normal = 1
+}
+
+
+
+Equipotential
+{
+C = -U / 2
+name = cathode
+j1 = Jmax/4
+j2 = Jmax/4
+k1 = 0
+k2 = Kmax/2
+}
+
+
+Equipotential
+{
+C = U / 2
+name = anode
+j1 = Jmax*3/4
+j2 = Jmax*3/4
+k1 = 0
+k2 = Kmax/2
+normal = -1
+}
+
+
+Equipotential
+{
+C = 0
+name = left
+j1 = 0
+j2 = 0
+k1 = 0
+k2 = Kmax
+}
+
+Equipotential
+{
+C = 0
+name = right
+j1 = Jmax
+j2 = Jmax
+k1 = 0
+k2 = Kmax
+normal = -1
+}
+
+Equipotential
+{
+C = 0
+name = top
+j1 = 0
+j2 = Jmax
+k1 = Kmax
+k2 = Kmax 
+normal = -1
+}
+
+//Equipotential
+//{
+//C = 0
+//name = bottom
+//j1 = 0
+//j2 = Jmax
+//k1 = 0
+//k2 = 0
+//}
+
+
+Load
+{
+	speciesName = electrons
+	density = 1e15
+	x1MinMKS = 0.3 
+	x1MaxMKS = 0.31
+	x2MinMKS = 0.1
+	x2MaxMKS = 0.2
+}
+
+}

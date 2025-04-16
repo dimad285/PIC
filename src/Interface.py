@@ -8,6 +8,9 @@ class SimulationUI_tk:
         Initialize the UI for simulation control.
         """
         self.root = root
+        self.cam_dist = False
+        self.closed = False
+        
         # Internal state
         self.state = {
             "simulation_running": False,
@@ -32,6 +35,19 @@ class SimulationUI_tk:
 
         # Build the UI
         self.build_ui(root)
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
+        # ... rest of initialization code ...
+
+    def on_closing(self):
+        """Handle window closing event."""
+        # Update state to indicate simulation is finished
+        self.state["finished"] = True
+        self.state["simulation_running"] = False
+        self.closed = True
+        # You can perform any other cleanup needed here
+        self.root.destroy()
 
     def toggle_simulation(self):
         """Toggle simulation state."""

@@ -8,6 +8,8 @@ class Boundaries():
         self.conditions = self.boundary_array(bounds, grid.gridshape)
         print('creating wall map...')
         self.walls = self.mark_cell_walls_sparse(self.conditions[0], grid.gridshape)
+        self.wall_lookup = cp.full(grid.m*grid.n, False, dtype=cp.bool_)
+        self.wall_lookup[self.walls[0]] = True
         self.bound_tuple = []
         for i in bounds:
             x0, y0, x1, y1 = i[0]

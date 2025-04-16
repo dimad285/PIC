@@ -70,7 +70,109 @@ void handle_wall_collisions(
 }
 ''', 'handle_wall_collisions')
 
-
+trace_kernel = cp.RawKernel(
+    """
+    extern "C" __global__ void trace_kernel(
+        const float* pos0, const float* pos1,
+        int* traced_indices, int Nx, int Ny, float dx, float dy, int max_steps, int num_particles
+    ) {
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if (idx >= num_particles) return;
+       
+        // Load particle start and end positions - now accessing from transposed arrays (n, 2)
+        float x_start = pos0[idx * 2];      // x-coordinate at pos0[particle_idx, 0]
+        float y_start = pos0[idx * 2 + 1];  // y-coordinate at pos0[particle_idx, 1]
+        float x_end = pos1[idx * 2];        // x-coordinate at pos1[particle_idx, 0]
+        float y_end = pos1[idx * 2 + 1];    // y-coordinate at pos1[particle_idx, 1]
+       
+        // Super-sampling factor (more accurate tracing)
+        const int SUPER_SAMPLE = 10;
+       
+        // Safety epsilon to avoid floating point rounding issues
+        const float EPSILON = 1e-5f;
+       
+        // Convert to grid coordinates
+        float gx_start = x_start / dx;
+        float gy_start = y_start / dy;
+        float gx_end = x_end / dx;
+        float gy_end = y_end / dy;
+       
+        // Initial cell
+        int i_start = (int)floorf(gx_start);
+        int j_start = (int)floorf(gy_start);
+        int i_end = (int)floorf(gx_end);
+        int j_end = (int)floorf(gy_end);
+       
+        // Store start cell
+        traced_indices[idx * max_steps] = j_start * Nx + i_start;
+       
+        // If start and end are in same cell, we're done
+        if (i_start == i_end && j_start == j_end) {
+            return;
+        }
+       
+        // Calculate line parameters
+        float delta_x = gx_end - gx_start;
+        float delta_y = gy_end - gy_start;
+        float line_length = sqrtf(delta_x*delta_x + delta_y*delta_y);
+       
+        // Calculate steps needed (with super-sampling for accuracy)
+        int steps = (int)(line_length * SUPER_SAMPLE) + 1;
+       
+        // Initialize cell tracking
+        int step_count = 1;  // We already stored initial position
+        int prev_i = i_start;
+        int prev_j = j_start;
+        int last_added_cell = j_start * Nx + i_start;
+       
+        // Check if we have enough space in the buffer
+        if (steps > max_steps * 10) {
+            steps = max_steps * 10;  // Cap to avoid infinite loops
+        }
+       
+        // Trace the path
+        for (int s = 1; s <= steps && step_count < max_steps; s++) {
+            // Calculate position at this step (with super-sampling)
+            float t = (float)s / steps;
+            float gx = gx_start + t * delta_x;
+            float gy = gy_start + t * delta_y;
+           
+            // Get current cell with epsilon adjustment to handle boundary cases
+            int i = (int)floorf(gx + EPSILON);
+            int j = (int)floorf(gy + EPSILON);
+           
+            // Check boundaries
+            if (i < 0 || i >= Nx || j < 0 || j >= Ny) {
+                continue;  // Skip this step but continue tracing
+            }
+           
+            // Check if we've moved to a new cell
+            int curr_cell = j * Nx + i;
+            if ((i != prev_i || j != prev_j) && curr_cell != last_added_cell) {
+                traced_indices[idx * max_steps + step_count] = curr_cell;
+                last_added_cell = curr_cell;
+                step_count++;
+               
+                // Check if we've run out of storage space
+                if (step_count >= max_steps - 1) {
+                    break;
+                }
+            }
+           
+            prev_i = i;
+            prev_j = j;
+        }
+       
+        // Ensure end cell is included
+        int end_cell = j_end * Nx + i_end;
+        if (end_cell != last_added_cell && step_count < max_steps) {
+            traced_indices[idx * max_steps + step_count] = end_cell;
+            step_count++;
+        }
+    }
+    """,
+    "trace_kernel"
+)
 
 def remove_out_of_bounds(particles:Particles.Particles2D, X_max, Y_max):
     """
@@ -249,119 +351,12 @@ def trace_particle_paths(particles:Particles.Particles2D, grid:Grid.Grid2D, max_
     # Preallocate array for storing traced indices (max_steps per particle)
     traced_indices = cp.full((num_particles, max_steps), -1, dtype=cp.int32)
    
-    # Define the kernel with super-sampling for accuracy
-    trace_kernel = cp.RawKernel(
-        """
-        extern "C" __global__ void trace_kernel(
-            const float* x0, const float* y0, const float* x1, const float* y1,
-            int* traced_indices, int Nx, int Ny, float dx, float dy, int max_steps, int num_particles
-        ) {
-            int idx = blockIdx.x * blockDim.x + threadIdx.x;
-            if (idx >= num_particles) return;
-            
-            // Load particle start and end positions
-            float x_start = x0[idx];
-            float y_start = y0[idx];
-            float x_end = x1[idx];
-            float y_end = y1[idx];
-            
-            // Super-sampling factor (more accurate tracing)
-            const int SUPER_SAMPLE = 10;
-            
-            // Safety epsilon to avoid floating point rounding issues
-            const float EPSILON = 1e-5f;
-            
-            // Convert to grid coordinates
-            float gx_start = x_start / dx;
-            float gy_start = y_start / dy;
-            float gx_end = x_end / dx;
-            float gy_end = y_end / dy;
-            
-            // Initial cell
-            int i_start = (int)floorf(gx_start);
-            int j_start = (int)floorf(gy_start);
-            int i_end = (int)floorf(gx_end);
-            int j_end = (int)floorf(gy_end);
-            
-            // Store start cell
-            traced_indices[idx * max_steps] = j_start * Nx + i_start;
-            
-            // If start and end are in same cell, we're done
-            if (i_start == i_end && j_start == j_end) {
-                return;
-            }
-            
-            // Calculate line parameters
-            float delta_x = gx_end - gx_start;
-            float delta_y = gy_end - gy_start;
-            float line_length = sqrtf(delta_x*delta_x + delta_y*delta_y);
-            
-            // Calculate steps needed (with super-sampling for accuracy)
-            int steps = (int)(line_length * SUPER_SAMPLE) + 1;
-            
-            // Initialize cell tracking
-            int step_count = 1;  // We already stored initial position
-            int prev_i = i_start;
-            int prev_j = j_start;
-            int last_added_cell = j_start * Nx + i_start;
-            
-            // Check if we have enough space in the buffer
-            if (steps > max_steps * 10) {
-                steps = max_steps * 10;  // Cap to avoid infinite loops
-            }
-            
-            // Trace the path
-            for (int s = 1; s <= steps && step_count < max_steps; s++) {
-                // Calculate position at this step (with super-sampling)
-                float t = (float)s / steps;
-                float gx = gx_start + t * delta_x;
-                float gy = gy_start + t * delta_y;
-                
-                // Get current cell with epsilon adjustment to handle boundary cases
-                int i = (int)floorf(gx + EPSILON);
-                int j = (int)floorf(gy + EPSILON);
-                
-                // Check boundaries
-                if (i < 0 || i >= Nx || j < 0 || j >= Ny) {
-                    continue;  // Skip this step but continue tracing
-                }
-                
-                // Check if we've moved to a new cell
-                int curr_cell = j * Nx + i;
-                if ((i != prev_i || j != prev_j) && curr_cell != last_added_cell) {
-                    traced_indices[idx * max_steps + step_count] = curr_cell;
-                    last_added_cell = curr_cell;
-                    step_count++;
-                    
-                    // Check if we've run out of storage space
-                    if (step_count >= max_steps - 1) {
-                        break;
-                    }
-                }
-                
-                prev_i = i;
-                prev_j = j;
-            }
-            
-            // Ensure end cell is included
-            int end_cell = j_end * Nx + i_end;
-            if (end_cell != last_added_cell && step_count < max_steps) {
-                traced_indices[idx * max_steps + step_count] = end_cell;
-                step_count++;
-            }
-        }
-        """,
-        "trace_kernel"
-    )
-   
     # Launch kernel
     threads_per_block = 256
     blocks_per_grid = (num_particles + threads_per_block - 1) // threads_per_block
     trace_kernel((blocks_per_grid,), (threads_per_block,), (
-        particles.R_old[0, :particles.last_alive], 
-        particles.R_old[1, :particles.last_alive],
-        particles.R[0, :particles.last_alive], 
-        particles.R[1, :particles.last_alive],
+        particles.R_old, 
+        particles.R, 
         traced_indices, 
         cp.int32(Nx), 
         cp.int32(Ny), 
@@ -429,20 +424,17 @@ void detect_collisions_kernel(
 detect_collisions_kernel = cp.RawKernel(kernel_code, 'detect_collisions_kernel')
 
 
-def detect_collisions(traced_indices, wall_cells, max_cell_id):
+def detect_collisions(particles:Particles.Particles2D, traced_indices, wall_lookup):
     num_particles, max_steps = traced_indices.shape
 
     # Create a wall lookup table (bitmask)
-    wall_lookup = cp.zeros(max_cell_id + 1, dtype=cp.bool_)
-    wall_lookup[wall_cells] = True
 
     # Flatten traced_indices for raw access
-    flat_traced = traced_indices.astype(cp.int32).ravel()
+    flat_traced = traced_indices.ravel()
 
     # Prepare output buffers
     max_collisions = num_particles  # worst case: all collide
     collided_indices = cp.full(max_collisions, -1, dtype=cp.int32)
-    collision_counter = cp.zeros(1, dtype=cp.int32)
 
     # Launch kernel
     threads_per_block = 256
@@ -453,14 +445,15 @@ def detect_collisions(traced_indices, wall_cells, max_cell_id):
             flat_traced,
             wall_lookup,
             collided_indices,
-            collision_counter,
+            particles.collision_counter,
             num_particles,
             max_steps
         )
     )
 
     # Slice valid results
-    num_collided = collision_counter.item()
+    num_collided = particles.collision_counter.item()
+    particles.collision_counter.fill(0)  # Reset counter
     return collided_indices[:num_collided]
 
 

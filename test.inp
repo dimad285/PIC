@@ -15,27 +15,23 @@ System
 	bins = 128
 	SCREEN_WIDTH = 1080
 	SCREEN_HEIGHT = 1080
-	IONIZATION = 0
+	IONIZATION = 1
 	SAVE_FIELDS = 1
 }
 
 Variables
 {
 	//physics
-	d = 0.001
 	U = 100
-	p = 10
-	T = 0.025
-	perm = 4.2 
-	Qflag = 1	
-
 
 	//grid
 	Kmax = 128
   	Jmax = 128
+	X = 1
+	Y = 1
 	
 	//time
-	baseTime = 1.0e-10
+	baseTime = 1.0e-8
   	
 	//species
 	A = 40
@@ -43,10 +39,10 @@ Variables
 	
 	//load
 	init_count = 1000000
-	load_l1 = 0.3
-	load_l2 = 0.31
-	load_r1 = 0.25
-	load_r2 = 0.35
+	load_l1 = 0.26
+	load_l2 = 0.7
+	load_r1 = 0.1
+	load_r2 = 0.3
 }
 
 
@@ -56,9 +52,9 @@ Grid
 	J = Jmax		
 	K = Kmax		
 	x1s = 0	
-	x1f = 1
+	x1f = X
 	x2s = 0		
-	x2f = 1
+	x2f = Y
 }
 
 Control
@@ -86,27 +82,6 @@ Species
 }
 
 
-Equipotential
-{
-C = 0
-name = cathode
-j1 = Jmax/4
-j2 = Jmax/4
-k1 = Kmax/4
-k2 = Kmax*3/4
-}
-
-
-Equipotential
-{
-C = U
-name = anode
-j1 = Jmax*3/4
-j2 = Jmax*3/4
-k1 = Kmax/4
-k2 = Kmax*3/4
-}
-
 
 Equipotential
 {
@@ -115,17 +90,17 @@ name = left
 j1 = 0
 j2 = 0
 k1 = 0
-k2 = Kmax
+k2 = Kmax - 1
 }
 
 Equipotential
 {
 C = 0
 name = right
-j1 = Jmax
-j2 = Jmax
+j1 = Jmax - 1
+j2 = Jmax - 1
 k1 = 0
-k2 = Kmax
+k2 = Kmax - 1
 }
 
 Equipotential
@@ -133,24 +108,40 @@ Equipotential
 C = 0
 name = top
 j1 = 0
-j2 = Jmax
-k1 = Kmax
-k2 = Kmax
+j2 = Jmax - 1
+k1 = Kmax - 1
+k2 = Kmax - 1
 }
+
+
 
 Equipotential
 {
-C = 0
-name = bottom
-j1 = 0
-j2 = Jmax
+C = -U / 2
+name = cathode
+j1 = Jmax/4
+j2 = Jmax/4
 k1 = 0
-k2 = 0
+k2 = Kmax/2
 }
+
+
+Equipotential
+{
+C = U / 2
+name = anode
+j1 = Jmax*3/4
+j2 = Jmax*3/4
+k1 = 0
+k2 = Kmax/2
+}
+
+
+
 
 Load
 {
-	speciesName = electrons
+	speciesName = ions
 	n = init_count
 	x1MinMKS = load_l1 
 	x1MaxMKS = load_l2

@@ -1,13 +1,16 @@
-from src import main
+from src.simulation import SimulationManager, SimulationConfig
 import cProfile
 import pstats
 import io
+from src.ConfigParser import ConfigParser
+
+
 
 if __name__ == "__main__":
-    parser = main.ConfigParser()
+    parser = ConfigParser()
     config_dict = parser.parse_file('test.inp')
-    config = main.SimulationConfig(config_dict)
-    manager = main.SimulationManager(config)
+    config = SimulationConfig(config_dict)
+    manager = SimulationManager(config)
     
     # Start profiling before running simulation
     pr = cProfile.Profile()
