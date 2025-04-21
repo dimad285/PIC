@@ -12,7 +12,7 @@ void update_density_direct_cylindrical(
     const float np2c,                 // particles-to-cell ratio
     float dr, float dz,               // cell sizes
     int nr, int nz,                   // grid dimensions
-    float two_pi,                     // 2π constant for volume calculation
+    float two_pi,                     
     int last_alive)
 {
     int pid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -75,19 +75,19 @@ void normalize_density_by_volume(
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= grid_n_r * grid_n_z) return;
-    
-    int r_idx = idx % grid_n_r;
+
+    int r_idx = idx / grid_n_z;  // fixed: r is the slow axis
     float volume;
-    
+
     if (r_idx == 0) {
         // Axis cells: cylindrical volume with radius dr/2
-        volume = (two_pi/4) * dr * dr * dz;  // π × dr²/4 × dz
+        volume = (two_pi / 4) * dr * dr * dz;
     } else {
-        // Regular cells: volume of a cylindrical shell
+        // Regular cells: cylindrical shell
         float r = dr * r_idx;
-        volume = (r + dr * 0.5f) * dr * dz * two_pi;
+        volume = (r + 0.5f * dr) * dr * dz * two_pi;
     }
-    
+
     rho[idx] /= volume;
 }
 ''', 'normalize_density_by_volume')
@@ -256,14 +256,24 @@ class Grid2D():
                     particles.part_type,
                     particles.q_type,
                     cp.float32(particles.np2c),
-                    cp.float32(self.dx), cp.float32(self.dy),
-                    cp.int32(self.m), cp.int32(self.n),
+                    cp.float32(self.dy), cp.float32(self.dx),
+                    cp.int32(self.n), cp.int32(self.m),
+                    cp.float32(2*cp.pi),
                     cp.int32(particles.last_alive)
                 )
             )
             
             # Apply normalization if needed
-            # ...
+            normalize_density_by_volume(
+                (grid_size,), (block_size,),
+                (
+                    self.rho,
+                    cp.int32(self.n), cp.int32(self.m),
+                    cp.float32(self.dy), cp.float32(self.dx),
+                    cp.float32(2*cp.pi)
+                )
+            )
+
         else:
             update_density_direct_cartesian(
                 (grid_size,), (block_size,),

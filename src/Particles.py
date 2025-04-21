@@ -318,7 +318,7 @@ class Particles2D():
         self.min_vy = 0
         self.max_vy = 0
 
-        self.np2c = 1
+        self.np2c = 2e4
     
     @property
     def get_R(self):
@@ -624,19 +624,15 @@ class Particles2D():
         num_remove = indices.size
         if num_remove == 0:
             return 0
-        
-        # Get indices of last alive particles to swap with
+        #self.part_type[indices] = 0
         swap_idx = cp.arange(self.last_alive - num_remove, self.last_alive)
         
-        # Perform swaps - now working with rows instead of columns
         self.R[indices], self.R[swap_idx] = self.R[swap_idx].copy(), self.R[indices].copy()
         self.V[indices], self.V[swap_idx] = self.V[swap_idx].copy(), self.V[indices].copy()
         
-        # These are still 1D arrays, so no change needed here
-        self.part_type[indices], self.part_type[swap_idx] = self.part_type[swap_idx], self.part_type[indices]
+        self.part_type[indices], self.part_type[swap_idx] = self.part_type[swap_idx].copy(), self.part_type[indices].copy()
         self.part_type[self.last_alive-num_remove:self.last_alive] = 0
         
-        # Update alive count
         self.last_alive -= num_remove
         
         return num_remove

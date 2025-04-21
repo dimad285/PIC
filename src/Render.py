@@ -11,6 +11,7 @@ from CuPy_TO_OpenGL import *
 from dataclasses import dataclass, field
 import numpy as np
 from math import radians, cos, sin
+import Particles
 
 @dataclass
 class Camera:
@@ -263,16 +264,10 @@ class PICRenderer:
         self.is_3d = is_3d
         self.line_plot_type = None
         self.fov = np.radians(60)
-        self.particle_count = max_particles
         self.label_list = []
         
-        # Initialize downsampling configuration first
-        self.max_displayed_particles = 100000  # Maximum particles to render
-        self.downsample_threshold = 50000     # Threshold when to start downsampling
-        self.current_displayed_particles = 0   # Track how many particles we're actually displaying
-        self.target_frame_time = 1/60         # Target 60 FPS
-        self.frame_time_history = []
-        self.adaptive_sampling = True
+        # Remove downsampling configuration
+        self.particle_count = max_particles
         
         print(f'Initializing {renderer_type} PIC Renderer...')
 
@@ -297,6 +292,7 @@ class PICRenderer:
             glfw.terminate()
             raise Exception("GLFW window creation failed")
 
+        glfw.set_window_size_callback(self.window, self._handle_window_resize)
         glfw.make_context_current(self.window)
 
         # Initialize all rendering components
@@ -322,6 +318,9 @@ class PICRenderer:
         glfw.set_scroll_callback(self.window, self._handle_scroll)
         glfw.set_key_callback(self.window, self._handle_keyboard)
 
+    def set_title(self, title):
+        glfw.set_window_title(self.window, title)
+    
     def set_renderer_type(self, renderer_type, is_3d=False):
         """Set the renderer type and whether it's 2D or 3D."""
         self.renderer_type = renderer_type
@@ -389,7 +388,7 @@ class PICRenderer:
         self.particle_vertex_size = particle_vertex_size
         
         # Allocate buffer for max_displayed_particles
-        vertex_bytes = self.max_displayed_particles * particle_vertex_size * np.float32().nbytes
+        vertex_bytes = self.particle_count * particle_vertex_size * np.float32().nbytes
         flags = cudart.cudaGraphicsRegisterFlags.cudaGraphicsRegisterFlagsWriteDiscard
         
         self.particle_vbo = glGenBuffers(1)
@@ -398,7 +397,7 @@ class PICRenderer:
         
         self.particle_buffer = CudaOpenGLMappedArray(
             np.float32, 
-            (self.max_displayed_particles, particle_vertex_size), 
+            (self.particle_count, particle_vertex_size), 
             self.particle_vbo, 
             flags
         )
@@ -542,45 +541,17 @@ class PICRenderer:
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
 
-    def update_particles(self, particle_positions, particle_types: cp.ndarray, x_min, x_max, y_min, y_max):
+    def update_particles(self, particles: Particles.Particles2D, x_min, x_max, y_min, y_max):
         """
-        Update particle positions with intelligent downsampling.
+        Update particle positions.
         
-        :param particle_positions: CuPy array of shape (n, 2) where each row is (x, y)
-        :param particle_types: CuPy array of shape (n,) for particle types
+        :param particles: Particles2D object containing particle data
+        :param x_min, x_max, y_min, y_max: Domain boundaries
         """
-        num_particles = particle_positions.shape[0]
-        
-        # Determine if downsampling is needed
-        if num_particles > self.downsample_threshold:
-            # Calculate sampling rate to match max_displayed_particles
-            sample_rate = self.max_displayed_particles / num_particles
-            step = max(1, int(1 / sample_rate))
-            
-            # Create index mask for systematic sampling
-            indices = cp.arange(0, num_particles, step, dtype=cp.int32)
-            
-            # Apply sampling
-            particle_positions = particle_positions[indices]
-            particle_types = particle_types[indices]
-            
-            num_particles = len(indices)
-            self.current_displayed_particles = num_particles
-        else:
-            self.current_displayed_particles = num_particles
+        num_particles = particles.last_alive
+        particle_positions = particles.R[:num_particles]
+        particle_types = particles.part_type[:num_particles]
 
-        # Safety check - ensure we don't exceed buffer size
-        if num_particles > self.max_displayed_particles:
-            # If we somehow got more particles than buffer size, do additional downsampling
-            sample_rate = self.max_displayed_particles / num_particles
-            step = max(1, int(1 / sample_rate))
-            indices = cp.arange(0, num_particles, step, dtype=cp.int32)
-            particle_positions = particle_positions[indices]
-            particle_types = particle_types[indices]
-            num_particles = len(indices)
-            self.current_displayed_particles = num_particles
-
-        # Continue with normal rendering for the sampled particles
         assert num_particles <= self.particle_count, (
             f"Number of particles ({num_particles}) exceeds buffer size ({self.particle_count})."
         )
@@ -935,7 +906,10 @@ class PICRenderer:
     def render_text(self, text, x, y, scale, color):
         # Use the text shader program
         glUseProgram(self.text_shader_program)
-
+        linked = glGetProgramiv(self.text_shader_program, GL_LINK_STATUS)
+        if not linked:
+            log = glGetProgramInfoLog(self.text_shader_program)
+            print("Shader program failed to link:\n", log.decode())
         # Set text color (normalize to 0.0 - 1.0)
         glUniform3f(glGetUniformLocation(self.text_shader_program, "textColor"),
                     color[0] / 255.0, color[1] / 255.0, color[2] / 255.0)
@@ -949,6 +923,7 @@ class PICRenderer:
         glBindVertexArray(self.text_vao)
 
         # Prepare vertex buffer for batch rendering
+        
         all_vertices = []
         for c in text:
             ch = self.Characters.get(c)
@@ -967,6 +942,7 @@ class PICRenderer:
 
             # Advance the cursor position for the next character
             x += (ch.advance >> 6) * scale  # Bitshift by 6 to get pixel value (1/64th of a pixel)
+
 
         if not all_vertices:
             return  # Nothing to render
@@ -993,6 +969,8 @@ class PICRenderer:
         glBindVertexArray(0)
         glBindTexture(GL_TEXTURE_2D, 0)
         glDisable(GL_BLEND)
+
+
 
     def render_heatmap(self):
         glUseProgram(self.heatmap_shader_program)
@@ -1228,3 +1206,8 @@ class PICRenderer:
             self.resize_particle_buffer(self.max_displayed_particles)
 
 
+    def _handle_window_resize(self, window, width, height):
+        """Handle window resize events by updating viewport to match window dimensions."""
+        glViewport(0, 0, width, height)
+        self.width = width
+        self.height = height

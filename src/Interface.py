@@ -127,10 +127,6 @@ class SimulationUI_tk:
         self.plot_var_selector.bind("<<ComboboxSelected>>", self.select_plot_variable)
         self.plot_var_selector.pack(pady=5)
 
-        self.cam_dist = tk.Scale(root, from_=1, to=20, orient="horizontal", label="Camera Distance")
-        self.cam_dist.set(self.state["camera distance"])
-        self.cam_dist.pack(pady=5)
-
     def get_state(self):
         """Return the current state as a dictionary."""
         return self.state

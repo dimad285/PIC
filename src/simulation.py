@@ -12,7 +12,8 @@ import Boundaries
 import Interface
 import tkinter as tk
 import cupyx
-import multigrid
+import Multigrid
+import Consts
 
 class Diagnostics():
     
@@ -289,10 +290,10 @@ def init_step(particles:Particles.Particles2D, grid:Grid.Grid2D, solver:Solvers.
         grid.phi.fill(0)
         print(cupyx.profiler.benchmark(solver.solve, (grid,)))
 
-    #particles.update_bilinear_weights(grid)
     grid.update_density(particles)
     if boundaries is not None:
         grid.phi[boundaries.conditions[0]] = boundaries.conditions[1]
+    #grid.phi[...] = solver.solve(grid.phi, -grid.rho*Consts.eps0_1, tol=1e-5, max_iter=5, max_cycles=100)
     solver.solve(grid)
     grid.update_E()
     particles.update_V(grid, -dt/2)
@@ -307,14 +308,14 @@ def step(particles:Particles.Particles2D, grid:Grid.Grid2D, dt, solver:Solvers.S
         particles.R[collided] = particles.R_old[collided]
         to_emit = cp.where(particles.collision_model[particles.part_type[collided]] == 1)[0]
         to_absorb = cp.where(particles.collision_model[particles.part_type[collided]] == 0)[0]
-        particles.remove(collided[to_absorb])
-        particles.emit(collided[to_emit])
+        particles.remove(collided[to_emit])
+        #particles.emit(collided[to_emit])
     
     particles.update_R(dt)
     particles.update_axis(dt)
-    #coll_step(particles, grid, boundaries)
-    #grid.rho_old[:] = grid.rho
+    coll_step(particles, grid, boundaries)
     grid.update_density(particles)
+    #grid.phi[...] = solver.solve(grid.phi, -grid.rho*Consts.eps0_1, tol=1e-5, max_iter=5, max_cycles=100)
     solver.solve(grid)
     grid.update_E()
     particles.update_V(grid, dt)
@@ -350,7 +351,7 @@ def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, gr
             renderer.renderer_type = "particles"
             match plot_var_name:
                 case "R":
-                    renderer.update_particles(particles.R, particles.part_type, 0, X, 0, Y)
+                    renderer.update_particles(particles, 0, X, 0, Y)
                     if bound_tuple != None:
                         renderer.update_boundaries(bound_tuple, (m, n))
                 case "V":
@@ -428,9 +429,8 @@ def draw(renderer:Render.PICRenderer, state, particles:Particles.Particles2D, gr
     if state['text_enabled']:
         renderer.update_legend('sim', f"Sim time: {(sim_state.sim_time)*1e6:.1f} mks", 80)
         renderer.update_legend('frame', f"Frame time: {(sim_state.frame_time)*1e6:.1f} mks", 110)
-        renderer.update_legend('n', f"N: {particles.last_alive} (displayed: {renderer.current_displayed_particles})", 140)
+        renderer.update_legend('n', f"N: {particles.last_alive}", 140)
         renderer.update_legend('dt', f"dt: {dt:.2e}", 200)
-        renderer.update_legend('sampling', f"Sampling rate: {renderer.current_displayed_particles/particles.last_alive*100:.1f}%", 170)
         renderer.update_legend('flytime', f"min flytime {cp.min(cp.array([cp.float32(grid.dx) / cp.max(particles.V[0]), cp.float32(grid.dy) / cp.max(particles.V[1])])):.2e}", 230)
         renderer.update_legend('t', f"t: {sim_state.t:.2e}", 260)
         renderer.label_list.extend(['sim', 'frame', 'n', 'dt', 'flytime', 't'])
@@ -557,13 +557,17 @@ class SimulationManager:
             self.state.boundaries = boundaries
             self.state.bound_tuple = boundaries.bound_tuple
             self.state.walls = boundaries.walls
-            self.state.solver = Solvers.Solver(
-                self.config.solver_type, 
-                self.state.grid, 
-                cylindrical=self.config.cylindrical, 
-                boundaries=boundaries.conditions, 
-                tol=1e-5
-            )
+            if self.config.solver_type == 'multigrid':
+                self.state.solver = Multigrid.MultigridSolver(self.config.m, self.config.n, self.state.grid.dx, 
+                                                              levels=6, omega=2/3)
+            else:
+                self.state.solver = Solvers.Solver(
+                    self.config.solver_type, 
+                    self.state.grid, 
+                    cylindrical=self.config.cylindrical, 
+                    boundaries=boundaries.conditions, 
+                    tol=1e-5
+                )
         else:
             self.state.solver = Solvers.Solver(
                 self.config.solver_type, 
@@ -675,6 +679,7 @@ class SimulationManager:
                 self.state.running = False
             self.state.framecounter = 0
             
+            self.state.renderer.set_title(f"OOPIC Pro - Step {self.state.step}, t = {self.state.t:.2e}")
 
     def cleanup(self):
         try:

@@ -9,7 +9,7 @@ System
 	MAX_PARTICLES = 1100000
 	UI = 1
 	RENDER = 1
-	RENDER_FRAME = 1
+	RENDER_FRAME = 10
 	DIAGNOSTICS = 0
 	DIAG_TYPE = heatmap
 	bins = 128
@@ -38,7 +38,7 @@ Variables
 	Gie = 0.03
 	
 	//load
-	init_count = 1000000
+	init_count = 100000
 	load_l1 = 0.26
 	load_l2 = 0.7
 	load_r1 = 0.1
@@ -48,7 +48,7 @@ Variables
 
 Grid
 {
-	Cylindrical = 0
+	Cylindrical = 1
 	J = Jmax		
 	K = Kmax		
 	x1s = 0	

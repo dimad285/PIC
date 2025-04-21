@@ -4,25 +4,25 @@ import matplotlib.pyplot as plt
 from ipywidgets import interact, IntSlider
 from mpl_toolkits.mplot3d import Axes3D
 from cupyx.profiler import benchmark
-from cupyx.scipy.sparse.linalg import spsolve
+from cupyx.scipy.sparse import linalg
 import cProfile
 import pstats
 import io
 import Solvers
-from numba import jit
 
 
 
-red_black_kernel_code = r'''
+gauss_seidel_kernel = cp.RawKernel(r'''
 extern "C" __global__
 void gauss_seidel_red_black(
-    float* phi,
-    const float* rho,
-    float h2,
-    float omega,
+    double* phi,
+    const double* rho,
+    double h2,
+    double omega,
     int nx,
     int ny,
     int is_red
+
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int size = nx * ny;
@@ -30,115 +30,37 @@ void gauss_seidel_red_black(
     int i = idx % nx;
     int j = idx / nx;
 
-    // Only interior points
+    // Only interior points (Dirichlet boundary)
     if (i > 0 && i < nx - 1 && j > 0 && j < ny - 1) {
         if ((i + j) % 2 == is_red) {
             int idx_n = (j + 1) * nx + i;
             int idx_s = (j - 1) * nx + i;
             int idx_e = j * nx + (i + 1);
             int idx_w = j * nx + (i - 1);
-            
-            float update = 0.25f * (
+
+            double update = 0.25 * (
                 phi[idx_n] + phi[idx_s] +
                 phi[idx_e] + phi[idx_w] -
                 h2 * rho[idx]
             );
-            phi[idx] = (1.0f - omega) * phi[idx] + omega * update;
+            phi[idx] = (1.0 - omega) * phi[idx] + omega * update;
         }
     }
 }
-'''
-
-gauss_seidel_kernel = cp.RawKernel(red_black_kernel_code, 'gauss_seidel_red_black')
-
-jacobi_kernel = cp.RawKernel(r'''
-extern "C" __global__
-void jacobi_kernel(
-    float* phi,
-    const float* rho,
-    float h2,
-    float omega,
-    int nx,
-    int ny,
-    int iterations
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int size = nx * ny;
-    if (idx >= size) return;
-    int i = idx % nx;
-    int j = idx / nx;
-    
-    // Allocate register memory
-    float phi_local = phi[idx];
-    
-    // Move boundary check outside the loop
-    if (i > 0 && i < nx - 1 && j > 0 && j < ny - 1) {
-        int idx_n = (j + 1) * nx + i;
-        int idx_s = (j - 1) * nx + i;
-        int idx_e = j * nx + (i + 1);
-        int idx_w = j * nx + (i - 1);
-        
-        for (int iter = 0; iter < iterations; ++iter) {
-            float update = 0.25f * (
-                phi[idx_n] + phi[idx_s] +
-                phi[idx_e] + phi[idx_w] -
-                h2 * rho[idx]
-            );
-            phi_local = (1.0f - omega) * phi_local + omega * update;
-            //__syncthreads();  // optional depending on memory model
-        }
-    }
-    
-    phi[idx] = phi_local;
-}
-''', 'jacobi_kernel')
+''', 'gauss_seidel_red_black')
 
 
-def smooth(phi_1d, rho_1d, h, nx, ny, omega=2/3, iterations=5):
-    
-    h2 = h * h
-
-    threads_per_block = 256
-    n = nx * ny
-    blocks = (n + threads_per_block - 1) // threads_per_block
-
-    for _ in range(iterations):
-        jacobi_kernel(
-        (blocks,), (threads_per_block,),
-        (phi_1d, rho_1d, cp.float32(h2), cp.float32(omega), cp.int32(nx), cp.int32(ny), cp.int32(iterations))
-    )
-        
-    return phi_1d
-
-def _smooth(phi_1d, rho_1d, h, nx, ny, omega=2/3, iterations=10):
-    h2 = h * h
-    threads_per_block = 256
-    n = nx * ny
-    blocks = (n + threads_per_block - 1) // threads_per_block
-
-    for _ in range(iterations):
-        # Red update
-        gauss_seidel_kernel(
-            (blocks,), (threads_per_block,),
-            (phi_1d, rho_1d, cp.float32(h2), cp.float32(omega), cp.int32(nx), cp.int32(ny), cp.int32(1))
-        )
-        # Black update
-        gauss_seidel_kernel(
-            (blocks,), (threads_per_block,),
-            (phi_1d, rho_1d, cp.float32(h2), cp.float32(omega), cp.int32(nx), cp.int32(ny), cp.int32(0))
-        )
 
 
-def residual(phi, rho, h, nx, ny):
-    """Calculate residual using CUDA kernel"""
-    residual_kernel = cp.RawKernel("""
+
+residual_kernel = cp.RawKernel(r"""
     // Residual Kernel
     extern "C" __global__ void 
     residual_kernel(
-        const float* phi,
-        const float* rho,
-        float* res,
-        float inv_h2,
+        const double* phi,
+        const double* rho,
+        double* res,
+        double inv_h2,
         int nx,
         int ny
     ) {
@@ -148,77 +70,79 @@ def residual(phi, rho, h, nx, ny):
         
         if (i > 0 && i < ny-1 && j > 0 && j < nx-1) {
             int index = i * nx + j;
-            float laplacian = (
+            double laplacian = (
                 phi[index-nx] + phi[index+nx] + 
                 phi[index-1] + phi[index+1] - 
-                4.0f * phi[index]
+                4.0 * phi[index]
             ) * inv_h2;
             res[index] = rho[index] - laplacian;
         }
         else if (i < ny && j < nx) {
-            res[i * nx + j] = 0.0f;
+            res[i * nx + j] = 0.0;
         }
     }
     """, 'residual_kernel')
-    
 
-    # Create output array
-    res = cp.zeros_like(phi)
+restriction_kernel = cp.RawKernel(r'''
+extern "C" __global__ void restriction_kernel(
+    const double* fine_grid, 
+    double* coarse_grid,
+    int nx_fine, 
+    int ny_fine, 
+    int nx_coarse, 
+    int ny_coarse
+) {
+    // Calculate coarse grid indices from thread and block IDs
+    int j = blockIdx.x * blockDim.x + threadIdx.x;  // x-direction
+    int i = blockIdx.y * blockDim.y + threadIdx.y;  // y-direction
     
-    # Set up thread and block dimensions
-    block_size = 256
-    grid_size = (nx * ny + block_size - 1) // block_size
-    h2_inv = 1.0 / (h * h)
-    
-    # Launch kernel
-    residual_kernel((grid_size,), (block_size,), (phi, rho, res, cp.float32(h2_inv), cp.int32(nx), cp.int32(ny)))
-    
-    # Wait for completion
-    cp.cuda.Stream.null.synchronize()
-    
-    return res
+    // Check if this thread is within coarse grid bounds
+    if (i < ny_coarse && j < nx_coarse) {
+        // Map to fine grid indices
+        int i_fine = 2 * i;
+        int j_fine = 2 * j;
+        
+        // Initialize sum and weight
+        double weighted_sum = 0.0;
+        double total_weight = 0.0;
+        
+        // Apply stencil weights to the 9 points
+        for (int di = -1; di <= 1; di++) {
+            for (int dj = -1; dj <= 1; dj++) {
+                int i_n = i_fine + di;
+                int j_n = j_fine + dj;
+                
+                // Check if the neighbor is within bounds
+                if (0 <= i_n && i_n < ny_fine && 0 <= j_n && j_n < nx_fine) {
+                    // Determine weight based on position
+                    double weight = 0.0;
+                    if (di == 0 && dj == 0) {          // Center
+                        weight = 0.25;
+                    } else if (di == 0 || dj == 0) {   // Adjacent
+                        weight = 0.125;
+                    } else {                           // Diagonal
+                        weight = 0.0625;
+                    }
+                    
+                    weighted_sum += weight * fine_grid[i_n * nx_fine + j_n];
+                    total_weight += weight;
+                }
+            }
+        }
+        
+        // Normalize in case of boundary points
+        if (total_weight > 0) {
+            coarse_grid[i * nx_coarse + j] = weighted_sum / total_weight;
+        }
+    }
+}
+''', 'restriction_kernel')
 
-'''
-def residual(phi, rho, h):
-    res = cp.zeros_like(phi)
-    res[1:-1,1:-1] = rho[1:-1,1:-1] - (
-        (phi[2:,1:-1] - 2*phi[1:-1,1:-1] + phi[:-2,1:-1]) +
-        (phi[1:-1,2:] - 2*phi[1:-1,1:-1] + phi[1:-1,:-2])
-    ) / h**2
-    return res
-'''
-
-def restrict(fine, nx_fine, ny_fine):
-
-    # Extract every other point in both dimensions
-    # First get every other row, then every other column
-    indices = cp.arange(0, nx_fine*ny_fine)[::2*nx_fine].reshape(-1, 1) + cp.arange(0, nx_fine, 2)
-    indices = indices.flatten()
-    
-    # Create coarse grid with copy of values
-    coarse = fine[indices].copy()
-    
-    return coarse
-
-'''
-def restrict(fine):
-    # Get every other point for the coarse grid
-    coarse = cp.zeros(((fine.shape[0] + 1) // 2, (fine.shape[1] + 1) // 2), dtype=fine.dtype)
-    
-    # Just use injection (every other point)
-    coarse = fine[0::2, 0::2]
-    
-    return coarse
-'''
-
-def prolong(coarse, nx_coarse, ny_coarse):
-    """Prolong from coarse to fine grid using CUDA kernel"""
-
-    prolongation_kernel = cp.RawKernel('''
+prolongation_kernel = cp.RawKernel(r'''
     extern "C" __global__ 
     void prolong_kernel(
-        const float* coarse,
-        float* fine,
+        const double* coarse,
+        double* fine,
         int nx_coarse,
         int ny_coarse,
         int nx_fine) {
@@ -239,7 +163,7 @@ def prolong(coarse, nx_coarse, ny_coarse):
             }
             else if (is_i_odd && !is_j_odd) {
                 if (i_coarse < ny_coarse - 1) {
-                    fine[i_fine * nx_fine + j_fine] = 0.5f * (
+                    fine[i_fine * nx_fine + j_fine] = 0.5 * (
                         coarse[i_coarse * nx_coarse + j_coarse] + 
                         coarse[(i_coarse+1) * nx_coarse + j_coarse]
                     );
@@ -247,7 +171,7 @@ def prolong(coarse, nx_coarse, ny_coarse):
             }
             else if (!is_i_odd && is_j_odd) {
                 if (j_coarse < nx_coarse - 1) {
-                    fine[i_fine * nx_fine + j_fine] = 0.5f * (
+                    fine[i_fine * nx_fine + j_fine] = 0.5 * (
                         coarse[i_coarse * nx_coarse + j_coarse] + 
                         coarse[i_coarse * nx_coarse + (j_coarse+1)]
                     );
@@ -255,7 +179,7 @@ def prolong(coarse, nx_coarse, ny_coarse):
             }
             else {
                 if (i_coarse < ny_coarse - 1 && j_coarse < nx_coarse - 1) {
-                    fine[i_fine * nx_fine + j_fine] = 0.25f * (
+                    fine[i_fine * nx_fine + j_fine] = 0.25 * (
                         coarse[i_coarse * nx_coarse + j_coarse] + 
                         coarse[(i_coarse+1) * nx_coarse + j_coarse] + 
                         coarse[i_coarse * nx_coarse + (j_coarse+1)] + 
@@ -267,168 +191,204 @@ def prolong(coarse, nx_coarse, ny_coarse):
     }
     ''', 'prolong_kernel')
 
-    # Ensure array is float32
+euclidean_norm_kernel = cp.RawKernel(r'''
+    extern "C" __global__
+    void euclidean_norm(
+        const double* vec,
+        double* norm,
+        int size
+    ) {
+        int idx = blockDim.x * blockIdx.x + threadIdx.x;
+        double sum = 0.0;
+        for (int i = idx; i < size; i += blockDim.x * gridDim.x) {
+            sum += vec[i] * vec[i];
+        }
+        atomicAdd(norm, sum);
+    }
+''', 'euclidean_norm')
+
+
+class MultigridSolver:
+    def __init__(self, nx, ny, h, levels=4, omega=2/3):
+        self.nx = nx
+        self.ny = ny
+        self.h = h
+        self.h2 = h * h
+        self.levels = levels
+        self.omega = omega
+
+        self.threads_per_block = 256
+        self.blocks = (nx * ny + self.threads_per_block - 1) // self.threads_per_block
+
+
+    def smooth(self, phi, rho, iterations=10):
+        for _ in range(iterations):
+            # Red
+            gauss_seidel_kernel(
+                (self.blocks,), (self.threads_per_block,),
+                (phi, rho, cp.float64(self.h2), cp.float64(self.omega),
+                 cp.int32(self.nx), cp.int32(self.ny), cp.int32(1))
+            )
+            # Black
+            gauss_seidel_kernel(
+                (self.blocks,), (self.threads_per_block,),
+                (phi, rho, cp.float64(self.h2), cp.float64(self.omega),
+                 cp.int32(self.nx), cp.int32(self.ny), cp.int32(0))
+            )
+
+
+    def residual(self, phi, rho):
+        res = cp.zeros_like(phi)
+        block_size = 256
+        grid_size = (self.nx * self.ny + block_size - 1) // block_size
+        inv_h2 = 1.0 / self.h2
+        residual_kernel((grid_size,), (block_size,),
+                        (phi, rho, res, cp.float64(inv_h2),
+                         cp.int32(self.nx), cp.int32(self.ny)))
+        return res
+
+    def restrict(self, fine):
+        nx_coarse = (self.nx + 1) // 2
+        ny_coarse = (self.ny + 1) // 2
+        coarse = cp.zeros(nx_coarse * ny_coarse, dtype=fine.dtype)
+
+        block_size = (16, 16)
+        grid_size = (
+            (nx_coarse + block_size[0] - 1) // block_size[0],
+            (ny_coarse + block_size[1] - 1) // block_size[1]
+        )
+
+        restriction_kernel(
+            grid_size,
+            block_size,
+            (fine, coarse, self.nx, self.ny, nx_coarse, ny_coarse)
+        )
+        return coarse
+
+    def prolong(self, coarse):
+        nx_coarse = (self.nx + 1) // 2
+        ny_coarse = (self.ny + 1) // 2
+        nx_fine = 2 * (nx_coarse - 1) + 1
+        ny_fine = 2 * (ny_coarse - 1) + 1
+        fine = cp.zeros((ny_fine, nx_fine), dtype=coarse.dtype).reshape(-1)
+
+        block_size = 256
+        grid_size = (nx_fine * ny_fine + block_size - 1) // block_size
+
+        prolongation_kernel((grid_size,), (block_size,),
+                            (coarse, fine, cp.int32(nx_coarse), cp.int32(ny_coarse), cp.int32(nx_fine)))
+        cp.cuda.Stream.null.synchronize()
+        return fine
+
+    def v_cycle(self, phi, rho, levels=None, max_iter=5):
+        if levels is None:
+            levels = self.levels
+        N = self.nx
+
+        if levels == 1:
+            self.smooth(phi, rho, iterations=20)
+            return phi
+
+        self.smooth(phi, rho, iterations=max_iter//2)
+        res = self.residual(phi, rho)
+        res_coarse = self.restrict(res)
+        phi_coarse = cp.zeros_like(res_coarse)
+
+        coarse_solver = MultigridSolver((N+1)//2, (N+1)//2, self.h * 2, levels=levels - 1, omega=self.omega)
+        phi_coarse = coarse_solver.v_cycle(phi_coarse, res_coarse, levels=levels - 1, max_iter=max_iter)
+
+        phi += self.prolong(phi_coarse)
+        self.smooth(phi, rho, iterations=max_iter)
+        return phi
     
-    # Calculate fine grid dimensions
-    nx_fine = 2 * (nx_coarse - 1) + 1
-    ny_fine = 2 * (ny_coarse - 1) + 1
-    
-    # Create output array
-    fine = cp.zeros((ny_fine, nx_fine), dtype=coarse.dtype).reshape(-1)
-    
-    # Set up thread and block dimensions
-    block_size = 256
-    grid_size = (nx_fine * ny_fine + block_size - 1) // block_size
-    
-    # Launch kernel
-    prolongation_kernel((grid_size,), (block_size,), (coarse, fine, cp.int32(nx_coarse), cp.int32(ny_coarse), cp.int32(nx_fine)))
-    
-    # Wait for completion
-    cp.cuda.Stream.null.synchronize()
-    
-    return fine
+    def norm(self, vec):
+        norm = cp.zeros(1, dtype=cp.float64)
+
+        euclidean_norm_kernel(
+            (self.blocks,), (self.threads_per_block,),
+            (vec, norm, cp.int32(vec.size))
+        )
+        return cp.sqrt(norm)
+
+    def solve(self, phi, rho, tol=1e-5, max_iter=5, max_cycles=50):
+        phi.fill(0)
+        rho_norm = self.norm(rho)
+        for _ in range(max_cycles):
+            res = self.residual(phi, rho)
+            rel_res = self.norm(res) / rho_norm
+            if rel_res < tol:
+                break
+            phi = self.v_cycle(phi, rho, levels=self.levels, max_iter=max_iter)
+        return phi
 
 
-'''
-def prolong(coarse):
-    nx, ny = coarse.shape
-    fine = cp.zeros((2 * (nx - 1) + 1, 2 * (ny - 1) + 1), dtype=coarse.dtype)
+# === MAIN FUNCTION ===
 
-    fine[::2, ::2] = coarse  # direct copy
-    fine[1::2, ::2] = 0.5 * (coarse[:-1, :] + coarse[1:, :])
-    fine[::2, 1::2] = 0.5 * (coarse[:, :-1] + coarse[:, 1:])
-    fine[1::2, 1::2] = 0.25 * (
-        coarse[:-1, :-1] + coarse[1:, :-1] +
-        coarse[:-1, 1:] + coarse[1:, 1:]
-    )
+def plot_3d_surface(phi_flat, nx, ny, title="Potential Field", cmap="viridis"):
+    """
+    Plot a 3D surface of the scalar field stored in `phi_flat`.
 
-    return fine
-'''
+    Parameters:
+        phi_flat (np.ndarray or cp.ndarray): Flattened scalar field (shape: nx * ny)
+        nx (int): Number of grid points in x-direction
+        ny (int): Number of grid points in y-direction
+        title (str): Plot title
+        cmap (str): Matplotlib colormap
+    """
+    if hasattr(phi_flat, 'get'):  # Check for CuPy array
+        phi_flat = phi_flat.get()
 
+    phi = phi_flat.reshape((ny, nx))
+    x = np.linspace(0, 1, nx)
+    y = np.linspace(0, 1, ny)
+    X, Y = np.meshgrid(x, y)
 
-def v_cycle(phi, rho, h, N, levels, omega=2/3, max_iter=5):
-
-    if levels == 1:
-        # Direct solve (just smooth more here, or use FFT)
-        #A = Solvers.Laplacian_square(N, N, h, h)
-        #return cp.linalg.solve(A, rho*h**2)
-        return smooth(phi, rho, h, N, N, omega=omega, iterations=20)
-
-    # Pre-smoothing
-    phi = smooth(phi, rho, h, N, N, omega=omega, iterations=max_iter)
-    # Residual
-    res = residual(phi, rho, h, N, N)
-
-    # Restrict
-    res_coarse = restrict(res, N, N)
-
-    # Initialize coarse grid phi
-    phi_coarse = cp.zeros_like(res_coarse)
-
-    # Recursive V-cycle on coarse grid
-    h_coarse = 2 * h
-    phi_coarse = v_cycle(phi_coarse, res_coarse, h_coarse, (N+1)//2, levels-1, omega=omega, max_iter=max_iter)
-
-    # Prolong and correct
-    phi += prolong(phi_coarse, (N+1)//2, (N+1)//2)
-    # Post-smoothing
-    phi = smooth(phi, rho, h, N, N, omega=omega, iterations=max_iter)
-
-
-    return phi
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(111, projection='3d')
+    surf = ax.plot_surface(X, Y, phi, cmap=cmap, edgecolor='k', linewidth=0.3, antialiased=True)
+    ax.set_title(title)
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    ax.set_zlabel('phi')
+    fig.colorbar(surf, shrink=0.5, aspect=5)
+    plt.tight_layout()
+    plt.show()
 
 
 def main(): 
-
-
-    def plot_cycle(field):
-        N = field.shape[0]
-        x = np.linspace(0, 1, N)
-        y = np.linspace(0, 1, N)
-        X, Y = np.meshgrid(x, y)
-        Z = field
-
-        fig = plt.figure(figsize=(8, 6))
-        ax = fig.add_subplot(111, projection='3d')
-        surf = ax.plot_surface(X, Y, Z, cmap='viridis', edgecolor='k', linewidth=0.3, antialiased=True)
-
-        ax.set_title(f"Potential at V-Cycle")
-        ax.set_xlabel('x')
-        ax.set_ylabel('y')
-        ax.set_zlabel('phi')
-        fig.colorbar(surf, shrink=0.5, aspect=5)
-        plt.tight_layout()
-        plt.show()
-
-    def plot_error():
-        plt.plot(errors, 'o-')
-        plt.title("Error vs. V-Cycle")
-        plt.xlabel("V-Cycle")
-        plt.ylabel("Error")
-        plt.show()
-
-
-
-
-    cycles = 10
-    N = 129  # grid size (should be 2^n + 1 for full multigrid cycle)
+    N = 129
     L = 1.0
     h = L / (N - 1)
-    x = cp.linspace(0, L, N)
-    y = cp.linspace(0, L, N)
+    levels = 6
+
+    x = cp.linspace(0, L, N, dtype=cp.float64)
+    y = cp.linspace(0, L, N, dtype=cp.float64)
     X, Y = cp.meshgrid(x, y, indexing='ij')
-    levels = 2
 
-    # Define source term and exact solution
+    # Source term
     rho = cp.sin(16*cp.pi * X) * cp.sin(16*cp.pi * Y)
-    #rho += (cp.sin(1*cp.pi * X) * cp.sin(1*cp.pi * Y)) * 1 
-    rho = rho.ravel()
-    rho = rho.astype(cp.float32)
-    rho_norm = cp.linalg.norm(rho)
+    rho = rho.ravel().astype(cp.float64)
     phi = cp.zeros_like(rho)
-    errors = []
-    potentials_np = [rho.reshape(N, N)]
+
+    solver = MultigridSolver(N, N, h, levels=levels, omega=2/3)
+    #phi = solver.solve(phi, -rho, tol=1e-5, max_iter=5, max_cycles=100)
+    #plot_3d_surface(phi, N, N)
+
+    # Benchmark the solver
+    print(benchmark(solver.solve, (phi, -rho, 1e-5, 5, 100), n_repeat=10))
+    #print(benchmark(linalg.gmres, (Lap, -rho, phi, 1e-5), n_repeat=10))
 
 
-    def multigrid(phi, rho, h, levels=8, omega=1.0, tol=1e-5, max_iter=50):
-        #phi = cp.zeros_like(rho)
-        for _ in range(cycles):
-            phi = v_cycle(phi, rho, h, N, levels=levels, omega=omega, max_iter=max_iter)
-            res = residual(phi, rho, h, N, N)
-            res_norm = cp.linalg.norm(res)
-            res_rel = res_norm/rho_norm
-            #errors.append(res_rel)
-            if res_rel < tol:
-                #print("Converged after " + str(_) + " cycles")
-                break
-        #print("Final error: " + str(res_rel))
-             
+# === PROFILING ENTRY POINT ===
 
-    #multigrid(phi, -rho, h, 2, 2/3, 1e-5, 20)
-    #smooth(phi, -rho, h, N, N, omega=2/3, iterations=10)
-    print(benchmark(multigrid, (phi, -rho, h, levels, 0.1, 1e-5, 5), n_repeat=100))
-    #multigrid(phi, -rho, h, levels, 2/3, 1e-5, 20)
-    #plot_cycle(phi.reshape(N, N).get())
-    #plot_error()
-
-
-# --- Test the Smoother ---
 if __name__ == '__main__':
-
-    
-    # Start profiling before running simulation
     pr = cProfile.Profile()
     pr.enable()
-    
-    # Run simulation
     main()
-    
-    # Stop profiling and save results
     pr.disable()
     pr.dump_stats("profile.prof")
-    s = io.StringIO()
-    sortby = 'cumulative'
-    ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
-    ps.print_stats()
     with open("profile.txt", "w") as f:
+        s = io.StringIO()
+        ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
+        ps.print_stats()
         f.write(s.getvalue())

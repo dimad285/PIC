@@ -202,7 +202,6 @@ src/__pycache__/
 output/
 test/
 src/backup/
-src/CuPy_TO_OpenGL.py
 src/Render_new.py
 tests/
 imgui.ini

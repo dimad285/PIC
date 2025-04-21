@@ -233,11 +233,10 @@ def null_collision_method(
     V = particles.V[:, idxs]
     Vx, Vy = V[0], V[1]
 
-    # --- [3] COMPUTE SPEEDS & ENERGIES ---
+
     speeds = cp.sqrt(Vx**2 + Vy**2)  # ||v||
     energies = 0.5 * Consts.me * speeds**2 * Consts.qe_1  # in eV
 
-    # --- [4] INTERPOLATE CROSS-SECTIONS ---
     elastic_sigma_T = interp_table(energies, *cross_sections[0])
     ionization_sigma_T = cp.zeros_like(elastic_sigma_T)
 
@@ -248,12 +247,12 @@ def null_collision_method(
 
     sigma_T = elastic_sigma_T + ionization_sigma_T
 
-    # --- [5] COMPUTE COLLISION PROBABILITY ---
+
     nu = density * sigma_T * speeds
     nu_max = cp.max(nu)
     P_T = 1 - cp.exp(-nu_max * dt)
 
-    # --- [6] SELECT COLLIDING PARTICLES ---
+
     rand = cp.random.uniform(0, 1, size=idxs.shape[0])
     collided_mask = rand < P_T
     collided_idxs = idxs[collided_mask]
@@ -261,13 +260,10 @@ def null_collision_method(
     if collided_idxs.size == 0:
         return
 
-    # --- [7] DETERMINE COLLISION TYPE ---
     R = cp.random.uniform(0, 1, size=collided_idxs.size)
     elastic_fraction = elastic_sigma_T[collided_mask] / sigma_T[collided_mask]
     is_elastic = R < elastic_fraction
 
-    # --- [8] APPLY COLLISIONS ---
-    # These should be CUDA kernels for full performance
-    apply_elastic(particles, collided_idxs[is_elastic])
-    if IONIZATION:
-        apply_ionization(particles, collided_idxs[~is_elastic], max_particles)
+    #apply_elastic(particles, collided_idxs[is_elastic])
+    #if IONIZATION:
+    #    apply_ionization(particles, collided_idxs[~is_elastic], max_particles)
