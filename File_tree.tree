@@ -1,0 +1,103 @@
+Cuda
+ ┣ Articles
+ ┃ ┣ mcc
+ ┃ ┃ ┣ elhafi_three_2020.pdf
+ ┃ ┃ ┗ to_find.txt
+ ┃ ┗ Multigrid
+ ┃ ┃ ┣ 1-s2.0-S0010465523000103-main.pdf
+ ┃ ┃ ┣ 19950019975.pdf
+ ┃ ┃ ┣ am63.pdf
+ ┃ ┃ ┣ article.pdf
+ ┃ ┃ ┣ fmm-fft-mg14.pdf
+ ┃ ┃ ┣ multigrid_6.pdf
+ ┃ ┃ ┣ Trottenberg_et_al_Multigrid.pdf
+ ┃ ┃ ┗ Unstructured_Geometric_Multigrid_in_Two_and_Three_.pdf
+ ┣ csf
+ ┃ ┣ Ar+.txt
+ ┃ ┣ Ar.txt
+ ┃ ┣ H.txt
+ ┃ ┣ N2.txt
+ ┃ ┗ Xe.txt
+ ┣ docs
+ ┃ ┣ api.md
+ ┃ ┣ architecture.md
+ ┃ ┣ configuration.md
+ ┃ ┣ README.md
+ ┃ ┗ simulation_flow.md
+ ┣ fields
+ ┃ ┣ fields_cartesian.txt
+ ┃ ┗ fields_cylindrical.txt
+ ┣ fonts
+ ┃ ┣ ARIAL.TTF
+ ┃ ┣ ARIALBD.TTF
+ ┃ ┣ ARIALBI.TTF
+ ┃ ┣ ARIALI.TTF
+ ┃ ┗ ARIBLK.TTF
+ ┣ logs
+ ┣ oopic
+ ┃ ┣ basic.config
+ ┃ ┣ basic.inp
+ ┃ ┣ oopicpro.log
+ ┃ ┣ test.config
+ ┃ ┗ test.inp
+ ┣ src
+ ┃ ┣ kernels
+ ┃ ┃ ┗ Multigrid.py
+ ┃ ┣ shaders
+ ┃ ┃ ┗ surface_vertex.glsl
+ ┃ ┣ __pycache__
+ ┃ ┃ ┣ Boundaries.cpython-312.pyc
+ ┃ ┃ ┣ Collisions.cpython-312.pyc
+ ┃ ┃ ┣ ConfigParser.cpython-312.pyc
+ ┃ ┃ ┣ Consts.cpython-312.pyc
+ ┃ ┃ ┣ CuPy_TO_OpenGL.cpython-312.pyc
+ ┃ ┃ ┣ Grid.cpython-312.pyc
+ ┃ ┃ ┣ Interface.cpython-312.pyc
+ ┃ ┃ ┣ main.cpython-312.pyc
+ ┃ ┃ ┣ MCC.cpython-312.pyc
+ ┃ ┃ ┣ Multigrid.cpython-312.pyc
+ ┃ ┃ ┣ Parser.cpython-312.pyc
+ ┃ ┃ ┣ Particles.cpython-312.pyc
+ ┃ ┃ ┣ Render.cpython-312.pyc
+ ┃ ┃ ┣ Simulation.cpython-312.pyc
+ ┃ ┃ ┣ simulation.cpython-313.pyc
+ ┃ ┃ ┣ Solvers.cpython-312.pyc
+ ┃ ┃ ┣ test3Dsurface.cpython-312.pyc
+ ┃ ┃ ┣ Update.cpython-312.pyc
+ ┃ ┃ ┗ __init__.cpython-312.pyc
+ ┃ ┣ Boundaries.py
+ ┃ ┣ Collisions.py
+ ┃ ┣ ConfigParser.py
+ ┃ ┣ Consts.py
+ ┃ ┣ CuPy_TO_OpenGL.py
+ ┃ ┣ FFT.py
+ ┃ ┣ Grid.py
+ ┃ ┣ Interface.py
+ ┃ ┣ MCC.py
+ ┃ ┣ Multigrid.py
+ ┃ ┣ Multigrid_test.py
+ ┃ ┣ Parser.py
+ ┃ ┣ Particles.py
+ ┃ ┣ Render.py
+ ┃ ┣ Simulation.py
+ ┃ ┣ Solvers.py
+ ┃ ┗ __init__.py
+ ┣ tests
+ ┃ ┣ fft_test.py
+ ┃ ┣ test.py
+ ┃ ┣ test3D.py
+ ┃ ┣ test3Dsurface.py
+ ┃ ┗ test_text.py
+ ┣ tools
+ ┃ ┣ logging_config.py
+ ┃ ┗ plot_grid_data.py
+ ┣ .gitignore
+ ┣ CUDAPIC.toml
+ ┣ Multigrid_test.py
+ ┣ phi.txt
+ ┣ PIC_GPU.pyw
+ ┣ profile.json
+ ┣ profile.prof
+ ┣ profile.txt
+ ┣ stats.py
+ ┗ test.inp

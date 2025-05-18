@@ -1,30 +1,30 @@
 import cupy as cp
-import Particles
+from src import Particles
 
 
 update_density_direct_cylindrical = cp.RawKernel(r'''
 extern "C" __global__
 void update_density_direct_cylindrical(
-    float *rho,                       // [num_grid_points]
-    const float *R,                   // [2, max_particles]
+    double *rho,                       // [num_grid_points]
+    const double *R,                   // [2, max_particles]
     const int *part_type,             // [max_particles]
-    const float *q_type,              // [num_types]
-    const float np2c,                 // particles-to-cell ratio
-    float dr, float dz,               // cell sizes
+    const double *q_type,              // [num_types]
+    const double np2c,                 // particles-to-cell ratio
+    double dr, double dz,               // cell sizes
     int nr, int nz,                   // grid dimensions
-    float two_pi,                     
+    double two_pi,                     
     int last_alive)
 {
     int pid = blockIdx.x * blockDim.x + threadIdx.x;
     if (pid >= last_alive) return;
 
     // R[0] is r (radial), R[1] is z (axial)
-    float r = R[2*pid] / dr;      // Normalized radial position
-    float z = R[2*pid+1] / dz;    // Normalized axial position
+    double r = R[2*pid] / dr;      // Normalized radial position
+    double z = R[2*pid+1] / dz;    // Normalized axial position
     
     // Clamp positions to valid grid range
-    r = max(0.0f, min(r, float(nr - 1)));
-    z = max(0.0f, min(z, float(nz - 1)));
+    r = max(0.0f, min(r, double(nr - 1)));
+    z = max(0.0f, min(z, double(nz - 1)));
     
     // Get integer cell coordinates
     int r0 = int(floorf(r));
@@ -35,16 +35,16 @@ void update_density_direct_cylindrical(
     int z1 = min(z0 + 1, nz - 1);
     
     // Calculate interpolation weights
-    float wr = r - float(r0);
-    float wz = z - float(z0);
-    float wr_1 = 1.0f - wr;
-    float wz_1 = 1.0f - wz;
+    double wr = r - double(r0);
+    double wz = z - double(z0);
+    double wr_1 = 1.0f - wr;
+    double wz_1 = 1.0f - wz;
     
     // Calculate bilinear weights
-    float w0 = wr_1 * wz_1;
-    float w1 = wr * wz_1;
-    float w2 = wr_1 * wz;
-    float w3 = wr * wz;
+    double w0 = wr_1 * wz_1;
+    double w1 = wr * wz_1;
+    double w2 = wr_1 * wz;
+    double w3 = wr * wz;
 
     // Calculate grid indices
     int i0 = z0 * nr + r0;
@@ -54,7 +54,7 @@ void update_density_direct_cylindrical(
 
     // Apply charge to grid with volume weighting for cylindrical coordinates
     int type = part_type[pid];
-    float charge = q_type[type] * np2c;
+    double charge = q_type[type] * np2c;
     
     // Add charge to grid nodes
     atomicAdd(&rho[i0], charge * w0);
@@ -68,23 +68,23 @@ void update_density_direct_cylindrical(
 normalize_density_by_volume = cp.RawKernel(r'''
 extern "C" __global__
 void normalize_density_by_volume(
-    float *rho,
+    double *rho,
     int grid_n_r,
     int grid_n_z,
-    float dr, float dz, float two_pi)
+    double dr, double dz, double two_pi)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= grid_n_r * grid_n_z) return;
 
     int r_idx = idx / grid_n_z;  // fixed: r is the slow axis
-    float volume;
+    double volume;
 
     if (r_idx == 0) {
         // Axis cells: cylindrical volume with radius dr/2
         volume = (two_pi / 4) * dr * dr * dz;
     } else {
         // Regular cells: cylindrical shell
-        float r = dr * r_idx;
+        double r = dr * r_idx;
         volume = (r + 0.5f * dr) * dr * dz * two_pi;
     }
 
@@ -96,12 +96,12 @@ void normalize_density_by_volume(
 update_density_direct_cartesian = cp.RawKernel(r'''
 extern "C" __global__
 void update_density_direct_cartesian(
-    float *rho,                       // [num_grid_points]
-    const float *R,                   // [2, max_particles]
+    double *rho,                       // [num_grid_points]
+    const double *R,                   // [2, max_particles]
     const int *part_type,             // [max_particles]
-    const float *q_type,              // [num_types]
-    const float np2c,                 // particles-to-cell ratio
-    float dx, float dy,               // cell sizes
+    const double *q_type,              // [num_types]
+    const double np2c,                 // particles-to-cell ratio
+    double dx, double dy,               // cell sizes
     int m, int n,                     // grid dimensions
     int last_alive)
 {
@@ -109,12 +109,12 @@ void update_density_direct_cartesian(
     if (pid >= last_alive) return;
 
     // Calculate grid position directly
-    float x = R[2*pid] / dx;
-    float y = R[2*pid+1] / dy;
+    double x = R[2*pid] / dx;
+    double y = R[2*pid+1] / dy;
     
     // Clamp positions to valid grid range
-    x = max(0.0f, min(x, float(m - 1)));
-    y = max(0.0f, min(y, float(n - 1)));
+    x = max(0.0f, min(x, double(m - 1)));
+    y = max(0.0f, min(y, double(n - 1)));
     
     // Get integer cell coordinates
     int x0 = int(floorf(x));
@@ -125,16 +125,16 @@ void update_density_direct_cartesian(
     int y1 = min(y0 + 1, n - 1);
     
     // Calculate interpolation weights
-    float wx = x - float(x0);
-    float wy = y - float(y0);
-    float wx_1 = 1.0f - wx;
-    float wy_1 = 1.0f - wy;
+    double wx = x - double(x0);
+    double wy = y - double(y0);
+    double wx_1 = 1.0f - wx;
+    double wy_1 = 1.0f - wy;
     
     // Calculate bilinear weights
-    float w0 = wx_1 * wy_1;
-    float w1 = wx * wy_1;
-    float w2 = wx_1 * wy;
-    float w3 = wx * wy;
+    double w0 = wx_1 * wy_1;
+    double w1 = wx * wy_1;
+    double w2 = wx_1 * wy;
+    double w3 = wx * wy;
 
     // Calculate grid indices
     int i0 = y0 * m + x0;
@@ -144,7 +144,7 @@ void update_density_direct_cartesian(
 
     // Apply charge to grid
     int type = part_type[pid];
-    float charge = q_type[type] * np2c;
+    double charge = q_type[type] * np2c;
     
     atomicAdd(&rho[i0], charge * w0);
     atomicAdd(&rho[i1], charge * w1);
@@ -157,12 +157,12 @@ void update_density_direct_cartesian(
 update_E_kenrel = cp.RawKernel(r'''
 extern "C" __global__
 void update_E(
-    const float *phi,   // [nx * ny]
-    float *E,           // [2, nx * ny] - output: E[0, :] = Ex, E[1, :] = Ey
+    const double *phi,   // [nx * ny]
+    double *E,           // [2, nx * ny] - output: E[0, :] = Ex, E[1, :] = Ey
     int nx,
     int ny,
-    float dx,
-    float dy)
+    double dx,
+    double dy)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int size = nx * ny;
@@ -171,8 +171,8 @@ void update_E(
     int ix = idx % nx;
     int iy = idx / nx;
 
-    float Ex = 0.0f;
-    float Ey = 0.0f;
+    double Ex = 0.0f;
+    double Ey = 0.0f;
 
     // Central differences, with forward/backward near edges
     if (ix > 0 && ix < nx - 1)
@@ -214,16 +214,18 @@ class Grid2D():
         self.cell_count = (m-1) * (n-1)
         self.domain = (X, Y)
 
-        self.rho = cp.zeros(m*n, dtype=cp.float32)
-        self.rho_old = cp.zeros(m*n, dtype=cp.float32)
-        self.wall_rho = cp.zeros(m*n, dtype=cp.float32)
-        self.b = cp.zeros(m*n, dtype=cp.float32) # righr-hand side of the Poisson equation
-        self.phi = cp.zeros(m*n, dtype=cp.float32)
-        self.E = cp.zeros((2, m*n), dtype=cp.float32)
-        self.J = cp.zeros((2, m*n), dtype=cp.float32)
-        self.A = cp.zeros((2, m*n), dtype=cp.float32)
-        self.B = cp.zeros((2, m*n), dtype=cp.float32)
-        self.NGD = cp.ones(m*n, dtype=cp.float32)
+        self.rho = cp.zeros(m*n, dtype=cp.float64)
+        self.rho_old = cp.zeros(m*n, dtype=cp.float64)
+        self.rho_background = cp.zeros(m*n, dtype=cp.float64)
+        self.b = cp.zeros(m*n, dtype=cp.float64) # right-hand side of the Poisson equation  ∆phi = b
+        self.phi = cp.zeros(m*n, dtype=cp.float64)
+        self.E = cp.zeros((2, m*n), dtype=cp.float64) 
+        self.E_background = cp.zeros((2, m*n), dtype=cp.float64)
+        self.J = cp.zeros((2, m*n), dtype=cp.float64) 
+        self.A = cp.zeros((2, m*n), dtype=cp.float64)
+        self.B = cp.zeros((2, m*n), dtype=cp.float64)
+        self.B_background = cp.zeros((2, m*n), dtype=cp.float64)
+        self.NGD = cp.ones(m*n, dtype=cp.float64)
 
 
 
@@ -237,7 +239,7 @@ class Grid2D():
 
         update_E_kenrel(
             (blocks_per_grid,), (threads_per_block,),
-            (self.phi, self.E, nx, ny, cp.float32(dx), cp.float32(dy))
+            (self.phi, self.E, nx, ny, cp.float64(dx), cp.float64(dy))
         )
     
 
@@ -255,10 +257,10 @@ class Grid2D():
                     particles.R,
                     particles.part_type,
                     particles.q_type,
-                    cp.float32(particles.np2c),
-                    cp.float32(self.dy), cp.float32(self.dx),
+                    cp.float64(particles.np2c),
+                    cp.float64(self.dy), cp.float64(self.dx),
                     cp.int32(self.n), cp.int32(self.m),
-                    cp.float32(2*cp.pi),
+                    cp.float64(2*cp.pi),
                     cp.int32(particles.last_alive)
                 )
             )
@@ -269,8 +271,8 @@ class Grid2D():
                 (
                     self.rho,
                     cp.int32(self.n), cp.int32(self.m),
-                    cp.float32(self.dy), cp.float32(self.dx),
-                    cp.float32(2*cp.pi)
+                    cp.float64(self.dy), cp.float64(self.dx),
+                    cp.float64(2*cp.pi)
                 )
             )
 
@@ -282,8 +284,8 @@ class Grid2D():
                     particles.R,
                     particles.part_type,
                     particles.q_type,
-                    cp.float32(particles.np2c),
-                    cp.float32(self.dx), cp.float32(self.dy),
+                    cp.float64(particles.np2c),
+                    cp.float64(self.dx), cp.float64(self.dy),
                     cp.int32(self.m), cp.int32(self.n),
                     cp.int32(particles.last_alive)
                 )
@@ -294,10 +296,9 @@ class Grid2D():
     def update_J(self, particles:Particles.Particles2D):
         pass
 
-
     def minmax_phi(self):
         return cp.min(self.phi), cp.max(self.phi)
-    
+        
     def minmax_rho(self):
         return cp.min(self.rho), cp.max(self.rho)
     

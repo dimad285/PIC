@@ -1,25 +1,21 @@
-from src.simulation import SimulationManager, SimulationConfig
+from src import SimulationManager, ConfigParser
 import cProfile
 import pstats
 import io
-from src.ConfigParser import ConfigParser
 
+PROFILE = True
 
+parser = ConfigParser()
+config_dict = parser.parse_file('test.inp')
 
-if __name__ == "__main__":
-    parser = ConfigParser()
-    config_dict = parser.parse_file('test.inp')
-    config = SimulationConfig(config_dict)
-    manager = SimulationManager(config)
-    
-    # Start profiling before running simulation
+manager = SimulationManager(config_dict)
+
+if PROFILE:
     pr = cProfile.Profile()
     pr.enable()
-    
-    # Run simulation
+
     manager.run()
-    
-    # Stop profiling and save results
+
     pr.disable()
     pr.dump_stats("profile.prof")
     s = io.StringIO()
@@ -28,3 +24,5 @@ if __name__ == "__main__":
     ps.print_stats()
     with open("profile.txt", "w") as f:
         f.write(s.getvalue())
+else:
+    manager.run()

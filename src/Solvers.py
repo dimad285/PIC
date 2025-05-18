@@ -1,9 +1,11 @@
 import cupy as cp
-import numpy as np
+#import numpy as np
 from cupyx.scipy.sparse import diags
-from cupyx.scipy.sparse.linalg import cg, lsmr, LinearOperator, spilu, spsolve, gmres
-import Consts
-import Grid
+from cupyx.scipy.sparse.linalg import cg, spsolve, gmres
+from . import Consts
+from . import Grid
+from . import Multigrid
+from . import Boundaries
 
 
 def boundary_conditions_left_gpu(A:cp.ndarray, boundary:cp.ndarray):
@@ -14,7 +16,7 @@ def boundary_conditions_left_gpu(A:cp.ndarray, boundary:cp.ndarray):
 
 def Laplacian_square(m, n, dx, dy) -> cp.ndarray:
 
-    Lap = cp.zeros((m*n, m*n), dtype=cp.float32)
+    Lap = cp.zeros((m*n, m*n), dtype=cp.float64)
     for i in range(n):
         for j in range(m):
             idx = i*m+j
@@ -45,11 +47,11 @@ def Laplacian_square(m, n, dx, dy) -> cp.ndarray:
     Lap[:, right] = 0
     Lap[right, right] = 1
                 
-    return Lap.astype(cp.float32)
+    return Lap.astype(cp.float64)
 
 def Laplacian_cylindrical(m, n, dr):
     
-    Lap = cp.zeros((m*n, m*n), dtype=cp.float32)
+    Lap = cp.zeros((m*n, m*n), dtype=cp.float64)
 
 
 
@@ -62,8 +64,8 @@ def Laplacian_cartesian_csr(m, n, dx, dy):
     Args:
         m (int): Number of grid points in the y-direction.
         n (int): Number of grid points in the x-direction.
-        dx (float): Grid spacing in the x-direction.
-        dy (float): Grid spacing in the y-direction.
+        dx (double): Grid spacing in the x-direction.
+        dy (double): Grid spacing in the y-direction.
 
     Returns:
         cupyx.scipy.sparse.csr_matrix: A sparse CSR matrix representing the Laplacian operator.
@@ -93,71 +95,7 @@ def Laplacian_cartesian_csr(m, n, dx, dy):
     )
     return laplacian
 
-'''
-def Laplacian_cylindrical_csr(m, n, dz, dr) -> cp.ndarray:
-    """
-    Constructs a discrete Laplacian operator in cylindrical coordinates with axial
-    symmetry (no theta dependence) using a sparse CSR matrix representation,
-    suitable for GPU computation with CuPy.
 
-    Args:
-        m (int): Number of grid points in the z-direction.
-        n (int): Number of grid points in the r-direction.
-        dr (float): Grid spacing in the r-direction.
-        dz (float): Grid spacing in the z-direction.
-        r_values (cp.ndarray): 1D array of r values at each radial grid point.
-
-    Returns:
-        cp.ndarray: A sparse CSR matrix representing the Laplacian operator.
-    """
-    size = m * n
-    diagonals = []
-    r_values = cp.linspace(0, dr * (n - 1), n)
-    r_values[0] = dr  # Prevent division by zero at r = 0
-
-    # Main diagonal (Cartesian part)
-    main_diag = -4 * cp.ones(size)
-    diagonals.append(main_diag)
-
-    # Horizontal off-diagonals (r-direction)
-    off_diag_r = cp.ones(size)
-    off_diag_r[m - 1::m] = 0  # Remove connections across row boundaries
-    diagonals.append(off_diag_r[:-1])
-    diagonals.append(off_diag_r[:-1])  # Mirror for lower diagonal
-
-    # Vertical off-diagonals (z-direction) with r term added.
-    off_diag_z_upper = cp.ones(size - m) 
-    off_diag_z_lower = cp.ones(size - m)
-
-    # Additional term for 1/r (du/dr)
-    r_term_upper = cp.zeros(size - m)
-    r_term_lower = cp.zeros(size - m)
-
-    for i in range(n - 1):
-        for j in range(m):
-            index = j + i * m
-            if r_values[i] != 0: #prevent division by 0
-                r_term_upper[index] = 1 / (2 *  r_values[i]) * dr
-                r_term_lower[index] = -1 / (2 *  r_values[i]) * dr
-
-    off_diag_z_upper += r_term_upper
-    off_diag_z_lower += r_term_lower
-
-    diagonals.append(off_diag_z_upper)
-    diagonals.append(off_diag_z_lower)
-
-    # Diagonal indices (corrected)
-    diag_indices = [0, 1, -1, m, -m]
-
-    # Sparse matrix creation
-    laplacian = diags(
-        diagonals,
-        diag_indices,
-        shape=(size, size),
-        format="csr"
-    )
-    return laplacian
-'''
 
 def Laplacian_cylindrical_csr(m, n, dz, dr) -> cp.ndarray:
     """
@@ -170,8 +108,8 @@ def Laplacian_cylindrical_csr(m, n, dz, dr) -> cp.ndarray:
     Args:
         m (int): Number of grid points in the z-direction.
         n (int): Number of grid points in the r-direction.
-        dz (float): Grid spacing in the z-direction.
-        dr (float): Grid spacing in the r-direction.
+        dz (double): Grid spacing in the z-direction.
+        dr (double): Grid spacing in the r-direction.
    
     Returns:
         cp.ndarray: A sparse CSR matrix representing the Laplacian operator.
@@ -179,16 +117,16 @@ def Laplacian_cylindrical_csr(m, n, dz, dr) -> cp.ndarray:
     size = m * n
    
     # Pre-allocate arrays for diagonals
-    main_diag = cp.ones(size, dtype=cp.float32) * -4  # Diagonal term
+    main_diag = cp.ones(size, dtype=cp.float64) * -4  # Diagonal term
    
     # z-direction terms (constant throughout the grid)
-    z_upper_diag = cp.ones(size-1, dtype=cp.float32)
+    z_upper_diag = cp.ones(size-1, dtype=cp.float64)
     z_upper_diag[m-1::m] = 0  # Remove connections across z boundaries
     z_lower_diag = cp.copy(z_upper_diag)
    
     # r-direction terms (vary with r)
-    r_upper_diag = cp.zeros(size-m, dtype=cp.float32)
-    r_lower_diag = cp.zeros(size-m, dtype=cp.float32)
+    r_upper_diag = cp.zeros(size-m, dtype=cp.float64)
+    r_lower_diag = cp.zeros(size-m, dtype=cp.float64)
    
     # Create array of r indices
     r_indices = cp.arange(1, n)
@@ -210,6 +148,8 @@ def Laplacian_cylindrical_csr(m, n, dz, dr) -> cp.ndarray:
     
     # For the axis points (r=0)
     main_diag[:m] = -4  # -2 for z, -2 for r
+    #z_lower_diag[:m] = 0  # No connection to lower z
+    #z_upper_diag[:m] = 0  # No connection to upper z
     
     # z-direction terms remain normal at axis
     # z_upper_diag and z_lower_diag already set correctly
@@ -256,7 +196,7 @@ def apply_boundary_conditions(Laplacian, boundary_nodes):
 
 
 class Solver():
-    def __init__(self, solver_type:str, grid:Grid.Grid2D, cylindrical=False, boundaries=None, tol = 1e-5):
+    def __init__(self, solver_type:str, grid:Grid.Grid2D, cylindrical=False, boundaries:Boundaries.Boundaries=None, tol = 1e-5):
         
         self.solver_type = solver_type
 
@@ -269,6 +209,8 @@ class Solver():
 
         self.boundaries = boundaries
         #print(self.boundaries)
+        if solver_type == 'multigrid':
+            self.phi_bc = cp.zeros(self.m * self.n, dtype=cp.float64)
 
         self.init_solver()
 
@@ -290,7 +232,7 @@ class Solver():
         if self.boundaries is not None and self.solver_type != 'inverse':
             print('applying boundary conditions...')
             # Assuming boundaries = [boundary_nodes, boundary_values]
-            self.Lap = apply_boundary_conditions(self.Lap, self.boundaries[0])
+            self.Lap = apply_boundary_conditions(self.Lap, self.boundaries.conditions[0])
 
     
         match self.solver_type:
@@ -301,7 +243,7 @@ class Solver():
                 cp.linalg.cholesky(self.Lap)
                 if self.boundaries != None:
                     print('applying boundary conditions...')
-                    boundary_conditions_left_gpu(self.Lap, self.boundaries[0])
+                    boundary_conditions_left_gpu(self.Lap, self.boundaries.conditions[0])
                 print('creating inverse Laplacian...')
                 self.Lap = cp.linalg.inv(self.Lap)
 
@@ -313,18 +255,25 @@ class Solver():
                 #M_x = lambda x: ilu.solve(x)
                 #self.M = LinearOperator(self.Lap.shape, matvec=M_x) 
 
+            case 'multigrid':
+                print('Using Multigrid solver')
+                self.multigrid = Multigrid.MultigridSolver(self.m, self.n, self.dx, self.boundaries.bc_lookup, levels=5, omega=1.9)
+            
+            
+            case None:
+                pass
+
 
 
 
     def solve(self, grid: Grid.Grid2D):
-
+        
         grid.b[:] = -grid.rho * Consts.eps0_1 * self.dx**2
     
         # Apply boundary values to RHS vector if needed
         if self.boundaries is not None:
-            boundary_nodes, boundary_values = self.boundaries
+            boundary_nodes, boundary_values = self.boundaries.conditions
             grid.b[boundary_nodes] = boundary_values
-
         
         match self.solver_type:
             case 'direct':
@@ -339,11 +288,15 @@ class Solver():
                     print(f"CG failed with error code {info}")
             case 'gmres':
                 # Use initial guess and capture convergence info
-                grid.phi[:], info = gmres(self.Lap, grid.b, x0=grid.phi, tol=self.tol)
+                grid.phi, info = gmres(self.Lap, grid.b, x0=grid.phi, tol=self.tol)
                 if info > 0:
                     print(f"GMRES failed to converge after {info} iterations")
                 elif info < 0:
                     print(f"GMRES failed with error code {info}")
+
+
+            case 'multigrid':
+                grid.phi, info = self.multigrid.solve(grid.phi, grid.b, tol=self.tol)
 
             case None:
                 pass
@@ -353,5 +306,5 @@ class Solver():
 
 if __name__ == '__main__':
     
-    lap = Laplacian_square(10, 10, 1, 1)
-    cp.savetxt("lap.txt", lap, fmt='%.2f')
+    lap = Laplacian_cylindrical_csr(10, 10, 1, 1)
+    cp.savetxt("lap.txt", lap.toarray(), fmt='%.2f')

@@ -1,0 +1,20 @@
+[project]
+name = "CUDAPIC"
+version = "0.1.0"
+description = "A GPU-accelerated 2D particle-in-cell plasma simulation code supporting both Cartesian and cylindrical coordinates."
+dependencies = [
+    "numpy",
+    "cupy",
+    "glfw",
+    "pyopengl",
+    "pyopengl_accelerate",
+    "tkinter",
+]
+
+[tool.setuptools]
+py-modules = ["CUDAPIC"]
+packages = ["src"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

@@ -1,7 +1,7 @@
 import cupy as cp
 import cupyx
-import Particles
-import Grid
+from src import Particles
+from src import Grid
 from enum import Enum, auto
 import time
 
@@ -73,29 +73,29 @@ void handle_wall_collisions(
 trace_kernel = cp.RawKernel(
     """
     extern "C" __global__ void trace_kernel(
-        const float* pos0, const float* pos1,
-        int* traced_indices, int Nx, int Ny, float dx, float dy, int max_steps, int num_particles
+        const double* pos0, const double* pos1,
+        int* traced_indices, int Nx, int Ny, double dx, double dy, int max_steps, int num_particles
     ) {
         int idx = blockIdx.x * blockDim.x + threadIdx.x;
         if (idx >= num_particles) return;
        
         // Load particle start and end positions - now accessing from transposed arrays (n, 2)
-        float x_start = pos0[idx * 2];      // x-coordinate at pos0[particle_idx, 0]
-        float y_start = pos0[idx * 2 + 1];  // y-coordinate at pos0[particle_idx, 1]
-        float x_end = pos1[idx * 2];        // x-coordinate at pos1[particle_idx, 0]
-        float y_end = pos1[idx * 2 + 1];    // y-coordinate at pos1[particle_idx, 1]
+        double x_start = pos0[idx * 2];      // x-coordinate at pos0[particle_idx, 0]
+        double y_start = pos0[idx * 2 + 1];  // y-coordinate at pos0[particle_idx, 1]
+        double x_end = pos1[idx * 2];        // x-coordinate at pos1[particle_idx, 0]
+        double y_end = pos1[idx * 2 + 1];    // y-coordinate at pos1[particle_idx, 1]
        
         // Super-sampling factor (more accurate tracing)
         const int SUPER_SAMPLE = 10;
        
         // Safety epsilon to avoid floating point rounding issues
-        const float EPSILON = 1e-5f;
+        const double EPSILON = 1e-5f;
        
         // Convert to grid coordinates
-        float gx_start = x_start / dx;
-        float gy_start = y_start / dy;
-        float gx_end = x_end / dx;
-        float gy_end = y_end / dy;
+        double gx_start = x_start / dx;
+        double gy_start = y_start / dy;
+        double gx_end = x_end / dx;
+        double gy_end = y_end / dy;
        
         // Initial cell
         int i_start = (int)floorf(gx_start);
@@ -112,9 +112,9 @@ trace_kernel = cp.RawKernel(
         }
        
         // Calculate line parameters
-        float delta_x = gx_end - gx_start;
-        float delta_y = gy_end - gy_start;
-        float line_length = sqrtf(delta_x*delta_x + delta_y*delta_y);
+        double delta_x = gx_end - gx_start;
+        double delta_y = gy_end - gy_start;
+        double line_length = sqrtf(delta_x*delta_x + delta_y*delta_y);
        
         // Calculate steps needed (with super-sampling for accuracy)
         int steps = (int)(line_length * SUPER_SAMPLE) + 1;
@@ -133,9 +133,9 @@ trace_kernel = cp.RawKernel(
         // Trace the path
         for (int s = 1; s <= steps && step_count < max_steps; s++) {
             // Calculate position at this step (with super-sampling)
-            float t = (float)s / steps;
-            float gx = gx_start + t * delta_x;
-            float gy = gy_start + t * delta_y;
+            double t = (double)s / steps;
+            double gx = gx_start + t * delta_x;
+            double gy = gy_start + t * delta_y;
            
             // Get current cell with epsilon adjustment to handle boundary cases
             int i = (int)floorf(gx + EPSILON);
@@ -360,8 +360,8 @@ def trace_particle_paths(particles:Particles.Particles2D, grid:Grid.Grid2D, max_
         traced_indices, 
         cp.int32(Nx), 
         cp.int32(Ny), 
-        cp.float32(grid.dx),
-        cp.float32(grid.dy),
+        cp.float64(grid.dx),
+        cp.float64(grid.dy),
         cp.int32(max_steps), 
         cp.int32(num_particles)
     ))

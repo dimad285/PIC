@@ -1,11 +1,13 @@
 import cupy as cp
-import Grid
+from src import Grid
 
 class Boundaries():
     def __init__(self, bounds, grid:Grid.Grid2D):
         
         print('creating boundary array...')
         self.conditions = self.boundary_array(bounds, grid.gridshape)
+        self.bc_lookup = cp.full(grid.m*grid.n, 0, dtype=cp.int32)
+        self.bc_lookup[self.conditions[0]] = 1
         print('creating wall map...')
         self.walls = self.mark_cell_walls_sparse(self.conditions[0], grid.gridshape)
         self.wall_lookup = cp.full(grid.m*grid.n, False, dtype=cp.bool_)
@@ -51,7 +53,7 @@ class Boundaries():
         
         # Convert Python-native lists to CuPy arrays
         indices = cp.array(boundary_indices, dtype=cp.int32)
-        values = cp.array(boundary_values, dtype=cp.float32)
+        values = cp.array(boundary_values, dtype=cp.float64)
         
         return (indices, values)
     

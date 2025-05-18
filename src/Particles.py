@@ -1,22 +1,25 @@
 import cupy as cp
-import Consts
+import cupyx
+import cProfile
+import pstats
+import io
 
 
 cylindrical_bilinear_kernel = cp.RawKernel(r'''
 extern "C" __global__
 void cylindrical_bilinear_weights(
-    const float *R,  // [2, max_particles]
-    float dr, float dz,
+    const double *R,  // [2, max_particles]
+    double dr, double dz,
     int m, int n,
     int last_alive,
-    float *weights,
+    double *weights,
     int *indices)
 {
     int pid = blockIdx.x * blockDim.x + threadIdx.x;
    
     if (pid < last_alive) {
-        float r = R[2*pid] / dr;      // Radial position in grid units
-        float z = R[2*pid+1] / dz;      // Axial position in grid units
+        double r = R[2*pid] / dr;      // Radial position in grid units
+        double z = R[2*pid+1] / dz;      // Axial position in grid units
        
         // Compute integer indices of the lower-left grid point
         int r0 = floorf(r);
@@ -27,18 +30,18 @@ void cylindrical_bilinear_weights(
         int z1 = z0 + 1;
        
         // Compute fractional distances for weighting
-        float wr = r - r0;
-        float wz = z - z0;
-        float wr_1 = 1.0f - wr;
-        float wz_1 = 1.0f - wz;
+        double wr = r - r0;
+        double wz = z - z0;
+        double wr_1 = 1.0f - wr;
+        double wz_1 = 1.0f - wz;
        
         // Adjust weights for cylindrical volume elements
-        float r_factor_0 = (r0 + 0.5f) * dr;  // Approximate radius at r0
-        float r_factor_1 = (r1 + 0.5f) * dr;  // Approximate radius at r1
+        double r_factor_0 = (r0 + 0.5f) * dr;  // Approximate radius at r0
+        double r_factor_1 = (r1 + 0.5f) * dr;  // Approximate radius at r1
        
         // Avoid division by zero
-        float norm_factor = 1.0f;
-        float sum = r_factor_0 + r_factor_1;
+        double norm_factor = 1.0f;
+        double sum = r_factor_0 + r_factor_1;
         if (sum > 1e-6f) {
             norm_factor = 1.0f / sum;
         }
@@ -62,27 +65,27 @@ void cylindrical_bilinear_weights(
 cartesian_bilinear_kernel = cp.RawKernel(r'''
 extern "C" __global__
 void cartesian_bilinear_weights(
-    const float *R,
-    float dx, float dy,
+    const double *R,
+    double dx, double dy,
     int m, int n,
     int last_alive,
-    float *weights,
+    double *weights,
     int *indices)
 {
     int pid = blockIdx.x * blockDim.x + threadIdx.x;
    
     if (pid < last_alive) {
         // Convert to grid coordinates
-        float x = R[2*pid] / dx;
-        float y = R[2*pid+1] / dy;
+        double x = R[2*pid] / dx;
+        double y = R[2*pid+1] / dy;
        
         // Handle NaN or inf values
         if (!isfinite(x)) x = 0.0f;
         if (!isfinite(y)) y = 0.0f;
        
         // Clamp positions to valid grid range
-        x = max(0.0f, min(x, float(m - 1)));
-        y = max(0.0f, min(y, float(n - 1)));
+        x = max(0.0f, min(x, double(m - 1)));
+        y = max(0.0f, min(y, double(n - 1)));
        
         // Get integer cell coordinates
         int x0 = int(floorf(x));
@@ -93,10 +96,10 @@ void cartesian_bilinear_weights(
         int y1 = min(y0 + 1, n - 1);
         
         // Calculate interpolation weights
-        float wx = x - float(x0);
-        float wy = y - float(y0);
-        float wx_1 = 1.0f - wx;
-        float wy_1 = 1.0f - wy;
+        double wx = x - double(x0);
+        double wy = y - double(y0);
+        double wx_1 = 1.0f - wx;
+        double wy_1 = 1.0f - wy;
         
         weights[4*pid] = wx_1 * wy_1;
         weights[4*pid+1] = wx * wy_1;
@@ -114,29 +117,29 @@ void cartesian_bilinear_weights(
 update_v_direct_kernel = cp.RawKernel(r'''
 extern "C" __global__
 void update_particle_velocity_direct(
-    float *V,              // [3, max_particles]
-    const float *R,        // [2, max_particles] 
-    const float *Ex, const float *Ey, // [num_grid_points]
+    double *V,              // [3, max_particles]
+    const double *R,        // [2, max_particles] 
+    const double *Ex, const double *Ey, // [num_grid_points]
     const int *part_type,             // [max_particles]
-    const float *q_type,              // [num_types]
-    const float *m_type_inv,          // [num_types]
-    float dt, float dx, float dy, int m, int n,
+    const double *q_type,              // [num_types]
+    const double *m_type_inv,          // [num_types]
+    double dt, double dx, double dy, int m, int n,
     int last_alive)
 {
     int pid = blockIdx.x * blockDim.x + threadIdx.x;
     if (pid >= last_alive) return;
 
     // Calculate grid position directly
-    float x = R[2*pid] / dx;
-    float y = R[2*pid+1] / dy;
+    double x = R[2*pid] / dx;
+    double y = R[2*pid+1] / dy;
     
     // Handle NaN or inf values
     if (!isfinite(x)) x = 0.0f;
     if (!isfinite(y)) y = 0.0f;
     
     // Clamp positions to valid grid range
-    x = max(0.0f, min(x, float(m - 1)));
-    y = max(0.0f, min(y, float(n - 1)));
+    x = max(0.0f, min(x, double(m - 1)));
+    y = max(0.0f, min(y, double(n - 1)));
     
     // Get integer cell coordinates
     int x0 = int(floorf(x));
@@ -147,16 +150,16 @@ void update_particle_velocity_direct(
     int y1 = min(y0 + 1, n - 1);
     
     // Calculate interpolation weights
-    float wx = x - float(x0);
-    float wy = y - float(y0);
-    float wx_1 = 1.0f - wx;
-    float wy_1 = 1.0f - wy;
+    double wx = x - double(x0);
+    double wy = y - double(y0);
+    double wx_1 = 1.0f - wx;
+    double wy_1 = 1.0f - wy;
     
     // Calculate bilinear weights
-    float w0 = wx_1 * wy_1;
-    float w1 = wx * wy_1;
-    float w2 = wx_1 * wy;
-    float w3 = wx * wy;
+    double w0 = wx_1 * wy_1;
+    double w1 = wx * wy_1;
+    double w2 = wx_1 * wy;
+    double w3 = wx * wy;
 
     // Calculate grid indices
     int i0 = y0 * m + x0;
@@ -165,11 +168,11 @@ void update_particle_velocity_direct(
     int i3 = y1 * m + x1;
 
     // Interpolate electric field
-    float Epx = w0 * Ex[i0] + w1 * Ex[i1] + w2 * Ex[i2] + w3 * Ex[i3];
-    float Epy = w0 * Ey[i0] + w1 * Ey[i1] + w2 * Ey[i2] + w3 * Ey[i3];
+    double Epx = w0 * Ex[i0] + w1 * Ex[i1] + w2 * Ex[i2] + w3 * Ex[i3];
+    double Epy = w0 * Ey[i0] + w1 * Ey[i1] + w2 * Ey[i2] + w3 * Ey[i3];
 
     int type = part_type[pid];
-    float k = dt * q_type[type] * m_type_inv[type];
+    double k = dt * q_type[type] * m_type_inv[type];
                                
     V[3*pid] += k * Epx;
     V[3*pid+1] += k * Epy;
@@ -180,29 +183,29 @@ void update_particle_velocity_direct(
 update_v_cylindrical_direct_kernel = cp.RawKernel(r'''
 extern "C" __global__
 void update_particle_velocity_cylindrical_direct(
-    float *V,              // [3, max_particles]
-    const float *R,        // [2, max_particles] 
-    const float *Er, const float *Ez, // [num_grid_points]
+    double *V,              // [3, max_particles]
+    const double *R,        // [2, max_particles] 
+    const double *Er, const double *Ez, // [num_grid_points]
     const int *part_type,             // [max_particles]
-    const float *q_type,              // [num_types]
-    const float *m_type_inv,          // [num_types]
-    float dt, float dr, float dz, int nr, int nz,
+    const double *q_type,              // [num_types]
+    const double *m_type_inv,          // [num_types]
+    double dt, double dr, double dz, int nr, int nz,
     int last_alive)
 {
     int pid = blockIdx.x * blockDim.x + threadIdx.x;
     if (pid >= last_alive) return;
 
     // Calculate grid position directly
-    float r = R[2*pid] / dr;      // Normalized r coordinate
-    float z = R[2*pid+1] / dz;    // Normalized z coordinate
+    double r = R[2*pid] / dr;      // Normalized r coordinate
+    double z = R[2*pid+1] / dz;    // Normalized z coordinate
     
     // Handle NaN or inf values
-    if (!isfinite(r)) r = 0.0f;
-    if (!isfinite(z)) z = 0.0f;
+    //if (!isfinite(r)) r = 0.0f;
+    //if (!isfinite(z)) z = 0.0f;
     
     // Clamp positions to valid grid range
-    r = max(0.0f, min(r, float(nr - 1)));
-    z = max(0.0f, min(z, float(nz - 1)));
+    r = max(0.0f, min(r, double(nr - 1)));
+    z = max(0.0f, min(z, double(nz - 1)));
     
     // Get integer cell coordinates
     int r0 = int(floorf(r));
@@ -213,16 +216,16 @@ void update_particle_velocity_cylindrical_direct(
     int z1 = min(z0 + 1, nz - 1);
     
     // Calculate interpolation weights
-    float wr = r - float(r0);
-    float wz = z - float(z0);
-    float wr_1 = 1.0f - wr;
-    float wz_1 = 1.0f - wz;
+    double wr = r - double(r0);
+    double wz = z - double(z0);
+    double wr_1 = 1.0f - wr;
+    double wz_1 = 1.0f - wz;
     
     // Calculate bilinear weights
-    float w0 = wr_1 * wz_1;
-    float w1 = wr * wz_1;
-    float w2 = wr_1 * wz;
-    float w3 = wr * wz;
+    double w0 = wr_1 * wz_1;
+    double w1 = wr * wz_1;
+    double w2 = wr_1 * wz;
+    double w3 = wr * wz;
 
     // Calculate grid indices
     int i0 = z0 * nr + r0;
@@ -231,26 +234,24 @@ void update_particle_velocity_cylindrical_direct(
     int i3 = z1 * nr + r1;
 
     // Interpolate electric field
-    float Epr = w0 * Er[i0] + w1 * Er[i1] + w2 * Er[i2] + w3 * Er[i3];
-    float Epz = w0 * Ez[i0] + w1 * Ez[i1] + w2 * Ez[i2] + w3 * Ez[i3];
+    double Epr = w0 * Er[i0] + w1 * Er[i1] + w2 * Er[i2] + w3 * Er[i3];
+    double Epz = w0 * Ez[i0] + w1 * Ez[i1] + w2 * Ez[i2] + w3 * Ez[i3];
 
     int type = part_type[pid];
-    float k = dt * q_type[type] * m_type_inv[type];
+    double k = dt * q_type[type] * m_type_inv[type];
                                  
     V[3*pid] += k * Epr;     // Radial velocity component
     V[3*pid+1] += k * Epz;   // Axial velocity component
     
-    // For completeness: handle angular velocity component if needed
-    // Note: In cylindrical coordinates, careful handling of angular E-field 
-    // components would be needed here if they exist
+
 }
 ''', 'update_particle_velocity_cylindrical_direct')
 
 
 update_r_kernel = cp.RawKernel(r'''
 extern "C" __global__
-void update_particle_position(
-    float *R_old, float *R_new, float *V, float dt, int last_alive)
+void update_r_kernel(
+    double *R_old, double *R_new, double *V, double dt, int last_alive)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= last_alive) return;
@@ -260,22 +261,24 @@ void update_particle_position(
     R_new[idx*2] += V[idx*3] * dt;
     R_new[idx*2+1] += V[idx*3+1] * dt;
 }
-''', 'update_particle_position')
+''', 'update_r_kernel')
 
 
 axis_kernel = cp.RawKernel(r'''
 extern "C" __global__
 void update_particle_axis(
-    float *R, float *V, int last_alive)
+    double *R, double *V, int last_alive)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= last_alive) return;
 
     if (R[idx*2+1] < 0.0f) {
         V[idx*3+1] = -V[idx*3+1];
+        R[idx*2+1] = -R[idx*2+1];
     }
 }
 ''', 'update_particle_axis')
+
 
 class Particles2D():
     def __init__(self, N, cylindrical=False):
@@ -283,12 +286,14 @@ class Particles2D():
         self.cylindrical = cylindrical # 'cartesian' or 'cylindrical'
         self.N = N
 
-        self.R = cp.zeros((N, 2), dtype=cp.float32)
-        self.R_old = cp.zeros((N, 2), dtype=cp.float32)
-        self.V = cp.zeros((N, 3), dtype=cp.float32)   
+        self.R = cp.zeros((N, 2), dtype=cp.float64)
+        self.R_old = cp.zeros((N, 2), dtype=cp.float64)
+        self.V = cp.zeros((N, 3), dtype=cp.float64)   
         self.part_type = cp.zeros(N, dtype=cp.int32) # particle type 
+        self.V_abs = cp.zeros(N, dtype=cp.float64) # particle speed
+        self.K = cp.zeros(N, dtype=cp.float64) # particle energy
 
-        #self.weights = cp.zeros((N, 4), dtype=cp.float32)
+        #self.weights = cp.zeros((N, 4), dtype=cp.float64)
         #self.indices = cp.zeros((N, 4), dtype=cp.int32)
 
         #self.R_grid = cp.zeros(N, dtype=cp.int32) # particle positions in grid space (in which cell they are)
@@ -301,13 +306,13 @@ class Particles2D():
         
         # Species
         self.part_name = ['reserved']
-        self.m_type = cp.array([0], dtype=cp.float32)
-        self.m_type_inv = cp.array([0], dtype=cp.float32)
-        self.q_type = cp.array([0], dtype=cp.float32)
+        self.m_type = cp.array([0], dtype=cp.float64)
+        self.m_type_inv = cp.array([0], dtype=cp.float64)
+        self.q_type = cp.array([0], dtype=cp.float64)
         self.collision_model = cp.array([128], dtype=cp.int32)
 
         self.mcc_mask = cp.zeros(N, dtype=cp.bool_)
-
+        self.mcc_count = 0
         self.cross_sections = [None]
         self.species_count = 0
 
@@ -318,9 +323,17 @@ class Particles2D():
         self.min_vy = 0
         self.max_vy = 0
 
-        self.np2c = 2e4
+        self.np2c = 1
     
-    @property
+    def __str__(self):
+        return f'Particles2D, {self.last_alive} particles, {self.species_count} species'
+
+    def __repr__(self):
+        pass
+
+    def __len__(self):
+        return self.last_alive
+
     def get_R(self):
         return self.R[:, :self.last_alive]
 
@@ -331,9 +344,9 @@ class Particles2D():
         self.q_type = cp.append(self.q_type, species_charge)
         self.collision_model = cp.append(self.collision_model, collision_model)
 
-        self.m_type = cp.asarray(self.m_type, dtype=cp.float32)
-        self.m_type_inv = cp.asarray(self.m_type_inv, dtype=cp.float32)
-        self.q_type = cp.asarray(self.q_type, dtype=cp.float32)
+        self.m_type = cp.asarray(self.m_type, dtype=cp.float64)
+        self.m_type_inv = cp.asarray(self.m_type_inv, dtype=cp.float64)
+        self.q_type = cp.asarray(self.q_type, dtype=cp.float64)
         self.collision_model = cp.asarray(self.collision_model, dtype=cp.int32)
 
         self.species_count += 1
@@ -341,6 +354,7 @@ class Particles2D():
     def set_mcc_mask(self):
         model = cp.where(self.collision_model == 0)[0][0]
         self.mcc_mask = self.part_type == model
+        self.mcc_count = cp.sum(self.mcc_mask)
 
     def update_R(self, dt):
         
@@ -349,7 +363,7 @@ class Particles2D():
         update_r_kernel(
             (grid_size,), (block_size,),
             (self.R_old, self.R, self.V,
-            cp.float32(dt), cp.int32(self.last_alive))
+            cp.float64(dt), cp.int32(self.last_alive))
         )
 
     def update_axis(self, dt):
@@ -374,7 +388,7 @@ class Particles2D():
                     grid.E[0], grid.E[1],
                     self.part_type,
                     self.q_type, self.m_type_inv,
-                    cp.float32(dt), cp.float32(grid.cell_size[0]), cp.float32(grid.cell_size[1]), 
+                    cp.float64(dt), cp.float64(grid.cell_size[0]), cp.float64(grid.cell_size[1]), 
                     cp.int32(grid.gridshape[0]), cp.int32(grid.gridshape[1]),
                     self.last_alive
                 )
@@ -389,7 +403,7 @@ class Particles2D():
                     grid.E[0], grid.E[1],
                     self.part_type,
                     self.q_type, self.m_type_inv,
-                    cp.float32(dt), cp.float32(grid.cell_size[0]), cp.float32(grid.cell_size[1]), 
+                    cp.float64(dt), cp.float64(grid.cell_size[0]), cp.float64(grid.cell_size[1]), 
                     cp.int32(grid.gridshape[0]), cp.int32(grid.gridshape[1]),
                     self.last_alive
                 )
@@ -514,7 +528,7 @@ class Particles2D():
             cylindrical_bilinear_kernel(
                 (blocks,), (threads_per_block,),
                 (self.R,  # Pass R components separately
-                cp.float32(dr), cp.float32(dz), 
+                cp.float64(dr), cp.float64(dz), 
                 cp.int32(m), cp.int32(n), 
                 cp.int32(last_alive), 
                 self.weights, 
@@ -526,7 +540,7 @@ class Particles2D():
             cartesian_bilinear_kernel(
                 (blocks,), (threads_per_block,),
                 (self.R,  # Pass R components separately
-                cp.float32(dx), cp.float32(dy), 
+                cp.float64(dx), cp.float64(dy), 
                 cp.int32(m), cp.int32(n), 
                 cp.int32(last_alive), 
                 self.weights, 
@@ -674,3 +688,28 @@ class Particles2D():
         self.V[la:la + n, 0] = cp.random.uniform(-0.1, 0.1)
         self.part_type[la:la + n] = self.part_name.index(species)
         self.last_alive += n
+
+
+def _main():
+    from . import Grid
+    N = 1000000
+    particles = Particles2D(N)
+    grid = Grid.Grid2D(128, 128, 1, 1)
+    particles.add_species('electrons', 9.10938356e-31, -1.60217662e-19, 0)
+    particles.uniform_species_load(0, 0, 1, 1, N, 'electrons')
+    print(cupyx.profiler.benchmark(particles.update_R, (0.1,), n_repeat=100))
+    print(cupyx.profiler.benchmark(particles.update_axis, (0.1,), n_repeat=100))
+    print(cupyx.profiler.benchmark(particles.update_V, (grid, 0.1), n_repeat = 100))
+
+
+if __name__ == '__main__':
+    pr = cProfile.Profile()
+    pr.enable()
+    _main()
+    pr.disable()
+    pr.dump_stats("profile.prof")
+    with open("profile.txt", "w") as f:
+        s = io.StringIO()
+        ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
+        ps.print_stats()
+        f.write(s.getvalue())

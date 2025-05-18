@@ -1,22 +1,11 @@
-detected_indices_list = [
-    [72], [51], [], [], [6], [], [], [47], [], [], [56], [], [], [], [], [9], [], [], [], [],
-    [98], [82], [], [], [13], [], [62, 85], [], [], [], [], [], [64], [49, 89], [], [], [], [],
-    [30, 40], [], [90], [], [41], [], [11], [], [97], [71, 88], [96], [34], [], [], [3, 93],
-    [28], [14, 26, 63], [99], [80], [19], [], [35], [], [58], [], [43], [29, 54], [], [10], [],
-    [44], [60], [2, 48], [], [], [], [32, 67, 73], [4, 91], [], [33, 84], [], [], [], [86],
-    [20, 22], [], [65], [45, 77], [5], [], [], [], [7], [81], [24], [25, 31, 78], [70], [12],
-    [15, 61, 68], [], [], [69, 87], [], [], [], [], [], [46], [57], [], [], [16, 53], [], [],
-    [1], [38], [], [], [], [], [], [], [], [39], [], [], [], [75], [55, 95], [23], [76], [], [],
-    [42], [], [92], [], [], [52], [], [50], [], [], [], [36], [27], [], [37], [], [8], [], [18],
-    [], [], [], [], [59], [], [], [17], [], [79, 83, 94], [], [], [], [74], [], [], [], [], [],
-    [0, 21], [], [], [], [], [], [], [], [], [], [], [], [66], [], [], [], [], [], [], [], [], [], [], []
-]
+import cupy as cp
+import sys
+import os
+from pathlib import Path
 
-detected_indices = set()
-for sublist in detected_indices_list:
-    detected_indices.update(sublist)
+# Add the project root directory to the Python path
+#project_root = Path(__file__).parent.parent  # This goes up one level from tests/ to the project root
+#sys.path.append(str(project_root))
+from src.Grid import Grid2D
 
-all_indices = set(range(100))
-missing_indices = all_indices - detected_indices
-
-print("Missing Indices:", missing_indices)
+print(cp.__version__)

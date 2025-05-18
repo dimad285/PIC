@@ -1,4 +1,4 @@
-basic
+Test
 {
 The most basic OOPIC Pro input file possible.
 }
@@ -9,13 +9,13 @@ System
 	MAX_PARTICLES = 1100000
 	UI = 1
 	RENDER = 1
-	RENDER_FRAME = 10
+	RENDER_FRAME = 1
 	DIAGNOSTICS = 0
 	DIAG_TYPE = heatmap
 	bins = 128
 	SCREEN_WIDTH = 1080
 	SCREEN_HEIGHT = 1080
-	IONIZATION = 1
+	IONIZATION = 0
 	SAVE_FIELDS = 1
 }
 
@@ -31,14 +31,14 @@ Variables
 	Y = 1
 	
 	//time
-	baseTime = 1.0e-8
+	baseTime = 1.0e-9
   	
 	//species
 	A = 40
 	Gie = 0.03
 	
 	//load
-	init_count = 100000
+	init_count = 1000000
 	load_l1 = 0.26
 	load_l2 = 0.7
 	load_r1 = 0.1
@@ -113,7 +113,15 @@ k1 = Kmax - 1
 k2 = Kmax - 1
 }
 
-
+//Equipotential
+//{
+//C = 0
+//name = bottom
+//j1 = 0
+//j2 = Jmax - 1
+//k1 = 0
+//k2 = 0
+//}
 
 Equipotential
 {
@@ -141,12 +149,12 @@ k2 = Kmax/2
 
 Load
 {
-	speciesName = ions
-	n = init_count
-	x1MinMKS = load_l1 
-	x1MaxMKS = load_l2
-	x2MinMKS = load_r1
-	x2MaxMKS = load_r2
+speciesName = electrons
+n = init_count
+x1MinMKS = load_l1 
+x1MaxMKS = load_l2
+x2MinMKS = load_r1
+x2MaxMKS = load_r2
 }
 
 

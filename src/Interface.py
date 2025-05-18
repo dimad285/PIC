@@ -2,40 +2,26 @@ import dearpygui.dearpygui as dpg
 import tkinter as tk
 from tkinter import ttk
 
+class UIState:
+    def __init__(self):
+        self.running = False
+        self.step_requested = False
+        self.restart_requested = False
+        self.trace_enabled = False
+        self.text_enabled = True
+        self.plot_type = "particles"
+        self.plot_variable = "R"
+        self.camera_distance = 10
+        self.closed = False
+
 class SimulationUI_tk:
     def __init__(self, root):
         """
         Initialize the UI for simulation control.
         """
         self.root = root
-        self.cam_dist = False
-        self.closed = False
-        
-        # Internal state
-        self.state = {
-            "simulation_running": False,
-            "simulation_step": False,
-            "trace_enabled": False,
-            "text_enabled": False,
-            "finished": False,
-            "plot_type": "particles",
-            "plot_variable": "R",
-            "camera distance": 10,
-        }
-
-        # Plot options and variables
-        self.plot_types = ["particles", "line_plot", "surface_plot", 'heatmap']
-        self.plot_variables = {
-            "particles": ["R", "V"],
-            "line_plot": ["Energy", "Momentum", "sim_time", "distribution_V", "distribution_E"],
-            "surface_plot": ["phi", "rho"],
-            "heatmap": ["phi", "rho"],
-        }
-        self.current_plot_variables = self.plot_variables[self.state["plot_type"]]
-
-        # Build the UI
+        self.ui_state = UIState()
         self.build_ui(root)
-
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         # ... rest of initialization code ...
@@ -43,48 +29,51 @@ class SimulationUI_tk:
     def on_closing(self):
         """Handle window closing event."""
         # Update state to indicate simulation is finished
-        self.state["finished"] = True
-        self.state["simulation_running"] = False
-        self.closed = True
+        self.ui_state.closed = True
+        self.ui_state.running = False
         # You can perform any other cleanup needed here
         self.root.destroy()
 
     def toggle_simulation(self):
         """Toggle simulation state."""
-        self.state["simulation_running"] = not self.state["simulation_running"]
-        label = "Stop Simulation" if self.state["simulation_running"] else "Start Simulation"
+        self.ui_state.running = not self.ui_state.running
+        label = "Stop Simulation" if self.ui_state.running else "Start Simulation"
         self.sim_button.config(text=label)
 
     def toggle_trace(self):
         """Toggle trace state."""
-        self.state["trace_enabled"] = self.trace_var.get()
+        self.ui_state.trace_enabled = self.trace_var.get()
 
     def toggle_text(self):
         """Toggle text state."""
-        self.state["text_enabled"] = self.text_var.get()
+        self.ui_state.text_enabled = self.text_var.get()
 
     def update_plot_type(self, event):
         """Update plot type and available plot variables."""
         selected_type = self.plot_type_selector.get()
-        self.state["plot_type"] = selected_type
+        self.ui_state.plot_type = selected_type
         self.current_plot_variables = self.plot_variables[selected_type]
         self.plot_var_selector["values"] = self.current_plot_variables
         self.plot_var_selector.set(self.current_plot_variables[0])
-        self.state["plot_variable"] = self.current_plot_variables[0]
+        self.ui_state.plot_variable = self.current_plot_variables[0]
 
     def select_plot_variable(self, event):
         """Update the selected plot variable."""
-        self.state["plot_variable"] = self.plot_var_selector.get()
+        self.ui_state.plot_variable = self.plot_var_selector.get()
         
     def simulation_step(self):
         """Step the simulation."""
-        self.state["simulation_step"] = True
+        self.ui_state.step_requested = True
+
+    def restart_simulation(self):
+        """Restart the simulation."""
+        self.ui_state.restart_requested = True
 
     def get_camera_distance(self):
-        return self.state["camera distance"]
+        return self.ui_state.camera_distance
     
     def set_camera_distance(self, distance):
-        self.state["camera distance"] = distance
+        self.ui_state.camera_distance = distance
 
     def build_ui(self, root):
         """Build the simulation control UI."""
@@ -99,9 +88,13 @@ class SimulationUI_tk:
         self.step_button = tk.Button(root, text="Step Simulation", command=self.simulation_step)
         self.step_button.pack(pady=5)
 
+        # Restart Button
+        self.restart_button = tk.Button(root, text="Restart Simulation", command=self.restart_simulation)
+        self.restart_button.pack(pady=5)
+
         # Trace and Text Toggles
-        self.trace_var = tk.BooleanVar(value=self.state["trace_enabled"])
-        self.text_var = tk.BooleanVar(value=self.state["text_enabled"])
+        self.trace_var = tk.BooleanVar(value=self.ui_state.trace_enabled)
+        self.text_var = tk.BooleanVar(value=self.ui_state.text_enabled)
 
         trace_checkbox = tk.Checkbutton(root, text="Enable Trace", variable=self.trace_var, command=self.toggle_trace)
         trace_checkbox.pack(pady=5)
@@ -113,27 +106,40 @@ class SimulationUI_tk:
         separator = ttk.Separator(root, orient="horizontal")
         separator.pack(fill="x", pady=10)
 
+        # Plot options and variables
+        self.plot_types = ["particles", "line_plot", "surface_plot", 'heatmap']
+        self.plot_variables = {
+            "particles": ["R", "V"],
+            "line_plot": ["Energy", "Momentum", "sim_time", "distribution_V", "distribution_E"],
+            "surface_plot": ["phi", "rho"],
+            "heatmap": ["phi", "rho"],
+        }
+        self.current_plot_variables = self.plot_variables[self.ui_state.plot_type]
+
         # Plot Type Selection
         tk.Label(root, text="Select Plot Type:").pack()
         self.plot_type_selector = ttk.Combobox(root, values=self.plot_types, state="readonly")
-        self.plot_type_selector.set(self.state["plot_type"])
+        self.plot_type_selector.set(self.ui_state.plot_type)
         self.plot_type_selector.bind("<<ComboboxSelected>>", self.update_plot_type)
         self.plot_type_selector.pack(pady=5)
 
         # Plot Variable Selection
         tk.Label(root, text="Select Plot Variable:").pack()
         self.plot_var_selector = ttk.Combobox(root, values=self.current_plot_variables, state="readonly")
-        self.plot_var_selector.set(self.state["plot_variable"])
+        self.plot_var_selector.set(self.ui_state.plot_variable)
         self.plot_var_selector.bind("<<ComboboxSelected>>", self.select_plot_variable)
         self.plot_var_selector.pack(pady=5)
 
     def get_state(self):
         """Return the current state as a dictionary."""
-        return self.state
+        return self.ui_state
 
     def update(self):
         """Update the UI state."""
         self.root.update()
+
+
+
 
 
 class SimulationUI_imgui:

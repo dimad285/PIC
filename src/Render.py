@@ -7,11 +7,11 @@ import ctypes
 import freetype
 import glm
 from cuda import cudart
-from CuPy_TO_OpenGL import *
+from .CuPy_TO_OpenGL import *
 from dataclasses import dataclass, field
 import numpy as np
 from math import radians, cos, sin
-import Particles
+from . import Particles
 
 @dataclass
 class Camera:
